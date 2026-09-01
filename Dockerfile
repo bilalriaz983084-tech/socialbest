@@ -1,9 +1,11 @@
-FROM node:20-bullseye-slim
+# Node 22 use kar rahe hain puppeteer/modern packages ke liye
+FROM node:22-bullseye-slim
 
-# System level tools install (FFmpeg, Python, aur build dependencies)
+# System dependencies + python-is-python3 link fix
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
+    python-is-python3 \
     ffmpeg \
     curl \
     && rm -rf /var/lib/apt/lists/*
@@ -12,14 +14,12 @@ WORKDIR /app
 
 # Dependencies copy aur install
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --omit=dev
 
-# Saara code aur routes copy
+# Application code copy
 COPY . .
 
-# Server port expose
 ENV PORT=3000
 EXPOSE 3000
 
-# Start Express Server
 CMD ["node", "server.js"]
