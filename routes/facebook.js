@@ -7,7 +7,7 @@ router.get('/status', (req, res) => {
 });
 
 router.post('/download', async (req, res) => {
-    let { url, formatType = 'video' } = req.body;
+    let { url } = req.body;
 
     if (!url) {
         return res.status(400).json({ success: false, error: 'Facebook URL is required' });
@@ -16,7 +16,7 @@ router.post('/download', async (req, res) => {
     try {
         let targetUrl = url.trim();
 
-        // 🌟 Step 1: Resolve /share/ redirects to get direct video page
+        // 🌟 Step 1: Follow /share/ and fb.watch redirects to get actual post ID
         if (targetUrl.includes('/share/') || targetUrl.includes('fb.watch')) {
             try {
                 const headRes = await axios.get(targetUrl, {
@@ -33,13 +33,16 @@ router.post('/download', async (req, res) => {
             } catch (_) {}
         }
 
-        // 🌟 Step 2: Native HTML Parser with clean desktop headers
+        // Detect if link is a Photo/Post
+        const isPhotoUrl = targetUrl.includes('/photo') || targetUrl.includes('/posts/') || targetUrl.includes('fbid=');
+
+        // 🌟 Step 2: Native HTML Scrape
         const pageRes = await axios.get(targetUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Sec-Fetch-Site': 'none',
-                'Accept-Language': 'en-US,en;q=0.9'
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Sec-Fetch-Site': 'none'
             },
             timeout: 9000
         }).catch(() => null);
@@ -47,43 +50,62 @@ router.post('/download', async (req, res) => {
         if (pageRes && pageRes.data) {
             const html = pageRes.data;
 
-            // Handle Photo Requests
-            if (formatType === 'image' || formatType === 'photo') {
-                const ogImageMatch = html.match(/property="og:image"\s+content="([^"]+)"/) || 
-                                     html.match(/content="([^"]+)"\s+property="og:image"/);
+            // CASE A: PHOTO EXTRACTION
+            if (isPhotoUrl) {
+                // Check multiple high-res image patterns in HTML
+                const imageMatches = [
+                    html.match(/property="og:image"\s+content="([^"]+)"/),
+                    html.match(/content="([^"]+)"\s+property="og:image"/),
+                    html.match(/"image":\{"uri":"([^"]+)"\}/),
+                    html.match(/data-visualcompletion="media-vc-image"\s+src="([^"]+)"/)
+                ];
 
-                if (ogImageMatch) {
-                    const rawPhotoUrl = ogImageMatch[1].replace(/&amp;/g, '&');
-                    return res.json({
-                        success: true,
-                        title: `Facebook_Photo_${Date.now()}`,
-                        thumbnail: rawPhotoUrl,
-                        downloadUrl: rawPhotoUrl,
-                        formats: [{
-                            quality: 'Original HD Photo',
-                            downloadUrl: rawPhotoUrl,
-                            extension: 'jpg',
-                            type: 'photo'
-                        }]
-                    });
+                for (const match of imageMatches) {
+                    if (match && match[1]) {
+                        let cleanPhoto = match[1].replace(/&amp;/g, '&');
+                        if (cleanPhoto.startsWith('http')) {
+                            cleanPhoto = cleanPhoto.replace(/\\/g, '');
+                            return res.json({
+                                success: true,
+                                title: `Facebook_Photo_${Date.now()}`,
+                                thumbnail: cleanPhoto,
+                                downloadUrl: cleanPhoto,
+                                formats: [{
+                                    quality: 'HD Photo',
+                                    downloadUrl: cleanPhoto,
+                                    extension: 'jpg',
+                                    type: 'photo'
+                                }]
+                            });
+                        }
+                    }
                 }
             }
 
-            // Extract HD & SD Video streams
-            const hdMatch = html.match(/playable_url_quality_hd":"([^"]+)"/) || html.match(/"browser_native_hd_url":"([^"]+)"/);
-            const sdMatch = html.match(/playable_url":"([^"]+)"/) || html.match(/"browser_native_sd_url":"([^"]+)"/);
+            // CASE B: VIDEO EXTRACTION (Zero duplicates - strict single selection)
+            const hdMatch = html.match(/playable_url_quality_hd":"([^"]+)"/);
+            const sdMatch = html.match(/playable_url":"([^"]+)"/);
 
-            const selectedVideo = hdMatch ? JSON.parse(`"${hdMatch[1]}"`) : (sdMatch ? JSON.parse(`"${sdMatch[1]}"`) : null);
+            let videoUrl = null;
+            let qualityLabel = 'HD Video';
 
-            if (selectedVideo) {
+            if (hdMatch) {
+                videoUrl = JSON.parse(`"${hdMatch[1]}"`);
+                qualityLabel = 'HD Quality (MP4)';
+            } else if (sdMatch) {
+                videoUrl = JSON.parse(`"${sdMatch[1]}"`);
+                qualityLabel = 'SD Quality (MP4)';
+            }
+
+            if (videoUrl) {
                 return res.json({
                     success: true,
                     title: `Facebook_Video_${Date.now()}`,
-                    thumbnail: selectedVideo,
-                    downloadUrl: selectedVideo,
+                    thumbnail: videoUrl,
+                    downloadUrl: videoUrl,
                     formats: [{
-                        quality: hdMatch ? 'HD Quality (MP4)' : 'SD Quality (MP4)',
-                        downloadUrl: selectedVideo,
+                        quality: qualityLabel,
+                        downloadUrl: videoUrl,
                         extension: 'mp4',
                         type: 'video'
                     }]
@@ -91,30 +113,45 @@ router.post('/download', async (req, res) => {
             }
         }
 
-        // 🌟 Step 3: Rapid API Gateway Fallback
-        const rapidScraper = await axios.get(`https://api.v2.emreakdas.com/api/facebook?url=${encodeURIComponent(targetUrl)}`, {
-            timeout: 6000
-        }).catch(() => null);
+        // 🌟 Step 3: Mirror Fallback (Used only if native scraping fails)
+        const mirrors = [
+            'https://cobalt-api.kwiatekm.tokyo',
+            'https://api.wuk.sh'
+        ];
 
-        if (rapidScraper && rapidScraper.data && rapidScraper.data.video) {
-            const videoUrl = rapidScraper.data.video;
-            return res.json({
-                success: true,
-                title: `Facebook_Video_${Date.now()}`,
-                thumbnail: videoUrl,
-                downloadUrl: videoUrl,
-                formats: [{
-                    quality: 'HD Video',
-                    downloadUrl: videoUrl,
-                    extension: 'mp4',
-                    type: 'video'
-                }]
-            });
+        for (const mirror of mirrors) {
+            try {
+                const mirrorRes = await axios.post(`${mirror}/`, {
+                    url: targetUrl,
+                    videoQuality: 'max'
+                }, {
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    timeout: 7000
+                });
+
+                if (mirrorRes.data && mirrorRes.data.url) {
+                    const isPhoto = mirrorRes.data.url.includes('.jpg') || mirrorRes.data.url.includes('.webp');
+                    return res.json({
+                        success: true,
+                        title: `Facebook_Media_${Date.now()}`,
+                        thumbnail: mirrorRes.data.url,
+                        downloadUrl: mirrorRes.data.url,
+                        formats: [{
+                            quality: isPhoto ? 'HD Photo' : 'HD Video',
+                            downloadUrl: mirrorRes.data.url,
+                            extension: isPhoto ? 'jpg' : 'mp4',
+                            type: isPhoto ? 'photo' : 'video'
+                        }]
+                    });
+                }
+            } catch (_) {
+                continue;
+            }
         }
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook media could not be resolved. Ensure the link is public.'
+            error: 'Could not extract Facebook media. Ensure the post is set to public.'
         });
 
     } catch (err) {
