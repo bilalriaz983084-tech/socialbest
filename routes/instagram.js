@@ -1,77 +1,113 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+const youtubedl = require('yt-dlp-exec');
+
+function extractShortcode(url) {
+    const match = url.match(/\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
+    return match ? match[1] : null;
+}
+
+router.get('/status', (req, res) => {
+    res.json({ platform: 'Instagram', status: 'Connected successfully', timestamp: new Date().toISOString() });
+});
 
 router.post('/download', async (req, res) => {
-    const { url } = req.body;
+    let { url, formatType = 'auto' } = req.body;
 
     if (!url) {
-        return res.status(400).json({ success: false, error: 'URL is required' });
+        return res.status(400).json({ error: 'Instagram URL is missing' });
+    }
+
+    const outputDir = path.join(__dirname, '../downloads');
+    if (!fs.existsSync(outputDir)) {
+        fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    const cookiesPath = path.join(__dirname, '../cookies.txt');
+    const shortcode = extractShortcode(url);
+
+    if (!shortcode) {
+        return res.status(400).json({ error: 'Invalid Instagram URL' });
     }
 
     try {
-        // Cobalt public instance se direct fetch (Instagram block bypass)
-        const response = await fetch('https://api.cobalt.tools/api/json', {
-            method: 'POST',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                url: url
-            })
-        });
+        console.log(`Processing Instagram URL: ${url} [Mode: ${formatType}]`);
 
-        const data = await response.json();
+        const isReel = url.includes('/reel/') || formatType === 'video';
 
-        if (data.status === 'error') {
-            throw new Error(data.text || 'Cobalt extraction failed');
-        }
-
-        // Case 1: Picker / Carousel (Multiple photos and videos)
-        if (data.status === 'picker' && Array.isArray(data.picker)) {
-            const formats = data.picker.map((item, index) => {
-                const isVideo = item.type === 'video';
-                return {
-                    quality: `Item ${index + 1} (${isVideo ? 'Video' : 'Photo'})`,
-                    downloadUrl: item.url,
-                    extension: isVideo ? 'mp4' : 'jpg',
-                    type: isVideo ? 'video' : 'photo'
-                };
-            });
+        // ==========================================
+        // 1. VIDEOS / REELS (yt-dlp)
+        // ==========================================
+        if (isReel && formatType !== 'image') {
+            console.log('Downloading video via yt-dlp...');
+            const outputTemplate = path.join(outputDir, `ig_video_${shortcode}.mp4`);
+            const downloadArgs = [
+                url,
+                '--output', outputTemplate,
+                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                '--merge-output-format', 'mp4',
+                '--no-playlist'
+            ];
+            if (fs.existsSync(cookiesPath)) downloadArgs.push('--cookies', cookiesPath);
+            await youtubedl(downloadArgs);
 
             return res.json({
                 success: true,
-                title: `Instagram_Carousel_${Date.now()}`,
-                formats: formats
+                message: 'Instagram video downloaded successfully!',
+                files: [`ig_video_${shortcode}.mp4`],
+                folder: outputDir
             });
         }
 
-        // Case 2: Single Video / Photo stream
-        if (data.url) {
-            const isVideo = !data.url.includes('.jpg') && !data.url.includes('.png');
-            return res.json({
-                success: true,
-                title: `Instagram_${Date.now()}`,
-                downloadUrl: data.url,
-                formats: [
-                    {
-                        quality: isVideo ? 'HD Video' : 'HD Photo',
-                        downloadUrl: data.url,
-                        extension: isVideo ? 'mp4' : 'jpg',
-                        type: isVideo ? 'video' : 'photo'
-                    }
-                ]
-            });
+        // ==========================================
+        // 2. AUTHENTIC PHOTOS / CAROUSEL (Instaloader via Python)
+        // ==========================================
+        console.log(`Extracting authentic post media using python -m instaloader for: ${shortcode}...`);
+
+        const tempDir = path.join(outputDir, `temp_${shortcode}`);
+        if (!fs.existsSync(tempDir)) {
+            fs.mkdirSync(tempDir, { recursive: true });
         }
 
-        throw new Error('No downloadable URL found in response');
+        // Target exact shortcode using python module
+        const cmd = `python -m instaloader --dirname-pattern="${tempDir}" --no-video-thumbnails --no-captions --no-metadata-json -- -${shortcode}`;
+        
+        await execPromise(cmd);
 
-    } catch (err) {
-        console.error('Instagram Route Error:', err.message);
-        return res.status(500).json({
-            success: false,
-            error: 'Instagram extraction failed: ' + err.message
+        // Move JPG/PNG images from temp to main downloads folder
+        const tempFiles = fs.readdirSync(tempDir);
+        const savedFiles = [];
+
+        tempFiles.forEach(file => {
+            if (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.webp') || file.endsWith('.mp4')) {
+                const newFileName = `ig_${shortcode}_${file}`;
+                fs.renameSync(path.join(tempDir, file), path.join(outputDir, newFileName));
+                savedFiles.push(newFileName);
+            }
         });
+
+        // Cleanup temp directory
+        fs.rmSync(tempDir, { recursive: true, force: true });
+
+        if (savedFiles.length === 0) {
+            return res.status(404).json({ success: false, error: 'No media extracted from post.' });
+        }
+
+        return res.json({
+            success: true,
+            message: `Successfully downloaded ${savedFiles.length} authentic media item(s) for post ${shortcode}!`,
+            files: savedFiles,
+            folder: outputDir
+        });
+
+    } catch (error) {
+        console.error('Instagram handler error:', error.message);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 
