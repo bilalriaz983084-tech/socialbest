@@ -7,16 +7,17 @@ router.get('/status', (req, res) => {
 });
 
 router.post('/download', async (req, res) => {
-    const { url } = req.body;
+    const { url, formatType = 'video' } = req.body;
 
     if (!url) {
         return res.status(400).json({ success: false, error: 'Facebook URL is required' });
     }
 
     try {
-        // Step 1: Direct Facebook Web Scrape (Fastest & Native)
-        const targetUrl = url.replace('m.facebook.com', 'www.facebook.com');
-        const pageRes = await axios.get(targetUrl, {
+        const cleanUrl = url.replace('m.facebook.com', 'www.facebook.com').split('?')[0];
+
+        // 1. Direct Facebook Page Fetch
+        const pageRes = await axios.get(cleanUrl, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -28,44 +29,51 @@ router.post('/download', async (req, res) => {
         if (pageRes && pageRes.data) {
             const html = pageRes.data;
 
-            // HD aur SD video links dhoondna
+            // Agar user Photo download kar raha hai:
+            if (formatType === 'image' || formatType === 'photo') {
+                const ogImageMatch = html.match(/property="og:image"\s+content="([^"]+)"/) || 
+                                     html.match(/content="([^"]+)"\s+property="og:image"/);
+
+                if (ogImageMatch) {
+                    const rawPhotoUrl = ogImageMatch[1].replace(/&amp;/g, '&');
+                    return res.json({
+                        success: true,
+                        title: `Facebook_Photo_${Date.now()}`,
+                        thumbnail: rawPhotoUrl,
+                        downloadUrl: rawPhotoUrl,
+                        formats: [{
+                            quality: 'Original HD Photo',
+                            downloadUrl: rawPhotoUrl,
+                            extension: 'jpg',
+                            type: 'photo'
+                        }]
+                    });
+                }
+            }
+
+            // Agar Video/Reel download kar raha hai (Only pick 1 Best HD, duplicates eliminated)
             const hdMatch = html.match(/playable_url_quality_hd":"([^"]+)"/) || html.match(/"browser_native_hd_url":"([^"]+)"/);
             const sdMatch = html.match(/playable_url":"([^"]+)"/) || html.match(/"browser_native_sd_url":"([^"]+)"/);
 
-            const formats = [];
+            const selectedVideo = hdMatch ? JSON.parse(`"${hdMatch[1]}"`) : (sdMatch ? JSON.parse(`"${sdMatch[1]}"`) : null);
 
-            if (hdMatch) {
-                const hdUrl = JSON.parse(`"${hdMatch[1]}"`);
-                formats.push({
-                    quality: 'HD Video',
-                    downloadUrl: hdUrl,
-                    extension: 'mp4',
-                    type: 'video'
-                });
-            }
-
-            if (sdMatch) {
-                const sdUrl = JSON.parse(`"${sdMatch[1]}"`);
-                formats.push({
-                    quality: 'SD Video',
-                    downloadUrl: sdUrl,
-                    extension: 'mp4',
-                    type: 'video'
-                });
-            }
-
-            if (formats.length > 0) {
+            if (selectedVideo) {
                 return res.json({
                     success: true,
                     title: `Facebook_Video_${Date.now()}`,
-                    thumbnail: formats[0].downloadUrl,
-                    downloadUrl: formats[0].downloadUrl,
-                    formats: formats
+                    thumbnail: selectedVideo,
+                    downloadUrl: selectedVideo,
+                    formats: [{
+                        quality: hdMatch ? 'HD Quality (MP4)' : 'SD Quality (MP4)',
+                        downloadUrl: selectedVideo,
+                        extension: 'mp4',
+                        type: 'video'
+                    }]
                 });
             }
         }
 
-        // Step 2: Fallback Mirror APIs (Agar direct HTML mein video na miley)
+        // 2. Fallback Mirror (Fast Gateway)
         const mirrors = [
             'https://api.cobalt.tools',
             'https://cobalt-api.kwiatekm.tokyo',
@@ -78,21 +86,18 @@ router.post('/download', async (req, res) => {
                     url: url.trim(),
                     videoQuality: 'max'
                 }, {
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 8000
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    timeout: 7000
                 });
 
                 if (mirrorRes.data && mirrorRes.data.url) {
                     return res.json({
                         success: true,
-                        title: `Facebook_Video_${Date.now()}`,
+                        title: `Facebook_Media_${Date.now()}`,
                         thumbnail: mirrorRes.data.url,
                         downloadUrl: mirrorRes.data.url,
                         formats: [{
-                            quality: 'HD Video',
+                            quality: 'High Quality (MP4)',
                             downloadUrl: mirrorRes.data.url,
                             extension: 'mp4',
                             type: 'video'
@@ -106,11 +111,10 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook video could not be extracted. Post might be private or from a closed group.'
+            error: 'Facebook media could not be resolved. Ensure post is completely public.'
         });
 
     } catch (err) {
-        console.error('Facebook Route Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
