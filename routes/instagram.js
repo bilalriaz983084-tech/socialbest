@@ -14,44 +14,53 @@ router.post('/download', async (req, res) => {
     }
 
     try {
-        let cleanUrl = url.trim();
-
-        // 🌟 Extract shortcode correctly
+        const cleanUrl = url.trim();
         const match = cleanUrl.match(/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
         if (!match) {
             return res.status(400).json({ success: false, error: 'Invalid Instagram URL format' });
         }
         const shortcode = match[1];
 
-        // 🌟 Engine 1: Dedicated Instagram Media API Gateway (Bypasses Vercel IP Block)
-        const gatewayRes = await axios.get(`https://instavideosave.net/wp-json/aio-dl/api/v1/preflight?url=${encodeURIComponent(`https://www.instagram.com/reel/${shortcode}/`)}`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            timeout: 7000
-        }).catch(() => null);
+        // 🌟 GATEWAY 1: High-Speed SnapSave / FastDL Public Bridge
+        try {
+            const snapRes = await axios.post('https://snapinsta.app/action.php', 
+                new URLSearchParams({ url: `https://www.instagram.com/reel/${shortcode}/`, action: 'post' }).toString(), 
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    timeout: 7000
+                }
+            );
 
-        if (gatewayRes && gatewayRes.data && gatewayRes.data.url) {
-            const downloadUrl = gatewayRes.data.url;
-            return res.json({
-                success: true,
-                title: `Instagram_${shortcode}`,
-                thumbnail: downloadUrl,
-                downloadUrl: downloadUrl,
-                formats: [{
-                    quality: 'HD Quality (MP4)',
-                    downloadUrl: downloadUrl,
-                    extension: 'mp4',
-                    type: 'video'
-                }]
-            });
-        }
+            if (snapRes.data) {
+                const vidMatch = snapRes.data.match(/href="([^"]+)" class="btn download-media/);
+                if (vidMatch && vidMatch[1]) {
+                    const videoUrl = vidMatch[1].replace(/&amp;/g, '&');
+                    return res.json({
+                        success: true,
+                        title: `Instagram_${shortcode}`,
+                        thumbnail: videoUrl,
+                        downloadUrl: videoUrl,
+                        formats: [{
+                            quality: 'HD Video',
+                            downloadUrl: videoUrl,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
+                    });
+                }
+            }
+        } catch (_) {}
 
-        // 🌟 Engine 2: DDInstagram Mobile Service
+        // 🌟 GATEWAY 2: DDInstagram JSON Direct Resolution
         try {
             const ddRes = await axios.get(`https://api.ddinstagram.com/videos/${shortcode}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)' },
-                timeout: 6000
+                headers: {
+                    'User-Agent': 'TelegramBot (like TwitterBot)'
+                },
+                timeout: 7000
             });
 
             if (ddRes.data && ddRes.data.direct_url) {
@@ -70,47 +79,73 @@ router.post('/download', async (req, res) => {
             }
         } catch (_) {}
 
-        // 🌟 Engine 3: Native Instagram Web API (Emulating iOS App)
-        const webApiRes = await axios.get(`https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 289.0.0.25.109',
-                'Sec-Fetch-Site': 'same-origin'
-            },
-            timeout: 6000
-        }).catch(() => null);
+        // 🌟 GATEWAY 3: Instavideosave Fast API
+        try {
+            const ivsRes = await axios.get(`https://instavideosave.net/wp-json/aio-dl/api/v1/preflight?url=${encodeURIComponent(`https://www.instagram.com/reel/${shortcode}/`)}`, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)'
+                },
+                timeout: 7000
+            });
 
-        if (webApiRes && webApiRes.data) {
-            const data = webApiRes.data.graphql ? webApiRes.data.graphql.shortcode_media : (webApiRes.data.items ? webApiRes.data.items[0] : null);
-            if (data) {
-                const isVideo = data.video_versions || data.is_video;
-                const streamUrl = isVideo 
-                    ? (data.video_versions ? data.video_versions[0].url : data.video_url)
-                    : (data.image_versions2 ? data.image_versions2.candidates[0].url : data.display_url);
+            if (ivsRes.data && ivsRes.data.url) {
+                return res.json({
+                    success: true,
+                    title: `Instagram_${shortcode}`,
+                    thumbnail: ivsRes.data.url,
+                    downloadUrl: ivsRes.data.url,
+                    formats: [{
+                        quality: 'HD Video',
+                        downloadUrl: ivsRes.data.url,
+                        extension: 'mp4',
+                        type: 'video'
+                    }]
+                });
+            }
+        } catch (_) {}
 
-                if (streamUrl) {
+        // 🌟 GATEWAY 4: Multi-Mirror Engine Fallback
+        const mirrors = [
+            'https://cobalt-api.kwiatekm.tokyo',
+            'https://api.wuk.sh'
+        ];
+
+        for (const mirror of mirrors) {
+            try {
+                const mirrorRes = await axios.post(`${mirror}/`, {
+                    url: `https://www.instagram.com/reel/${shortcode}/`,
+                    videoQuality: 'max'
+                }, {
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    timeout: 7000
+                });
+
+                if (mirrorRes.data && mirrorRes.data.url) {
                     return res.json({
                         success: true,
                         title: `Instagram_${shortcode}`,
-                        thumbnail: streamUrl,
-                        downloadUrl: streamUrl,
+                        thumbnail: mirrorRes.data.url,
+                        downloadUrl: mirrorRes.data.url,
                         formats: [{
-                            quality: isVideo ? 'HD Video' : 'HD Photo',
-                            downloadUrl: streamUrl,
-                            extension: isVideo ? 'mp4' : 'jpg',
-                            type: isVideo ? 'video' : 'photo'
+                            quality: 'HD Video',
+                            downloadUrl: mirrorRes.data.url,
+                            extension: 'mp4',
+                            type: 'video'
                         }]
                     });
                 }
+            } catch (_) {
+                continue;
             }
         }
 
         return res.status(400).json({
             success: false,
-            error: 'Unable to extract media. Profile might be private.'
+            error: 'Instagram rate-limited this request. Please try another reel link.'
         });
 
     } catch (err) {
-        console.error('Instagram Route Error:', err.message);
+        console.error('Instagram Route Crash:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
