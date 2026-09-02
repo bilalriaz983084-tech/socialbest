@@ -14,22 +14,44 @@ router.post('/download', async (req, res) => {
     }
 
     try {
-        // Clean URL to base post/reel path
-        let cleanUrl = url.split('?')[0].trim();
-        if (!cleanUrl.endsWith('/')) cleanUrl += '/';
+        let cleanUrl = url.trim();
 
+        // 🌟 Extract shortcode correctly
         const match = cleanUrl.match(/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
         if (!match) {
             return res.status(400).json({ success: false, error: 'Invalid Instagram URL format' });
         }
         const shortcode = match[1];
 
-        // METHOD 1: Fast Unblocked Gateway (DDInstagram JSON API)
+        // 🌟 Engine 1: Dedicated Instagram Media API Gateway (Bypasses Vercel IP Block)
+        const gatewayRes = await axios.get(`https://instavideosave.net/wp-json/aio-dl/api/v1/preflight?url=${encodeURIComponent(`https://www.instagram.com/reel/${shortcode}/`)}`, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            },
+            timeout: 7000
+        }).catch(() => null);
+
+        if (gatewayRes && gatewayRes.data && gatewayRes.data.url) {
+            const downloadUrl = gatewayRes.data.url;
+            return res.json({
+                success: true,
+                title: `Instagram_${shortcode}`,
+                thumbnail: downloadUrl,
+                downloadUrl: downloadUrl,
+                formats: [{
+                    quality: 'HD Quality (MP4)',
+                    downloadUrl: downloadUrl,
+                    extension: 'mp4',
+                    type: 'video'
+                }]
+            });
+        }
+
+        // 🌟 Engine 2: DDInstagram Mobile Service
         try {
-            const ddApi = `https://api.ddinstagram.com/videos/${shortcode}`;
-            const ddRes = await axios.get(ddApi, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                timeout: 8000
+            const ddRes = await axios.get(`https://api.ddinstagram.com/videos/${shortcode}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)' },
+                timeout: 6000
             });
 
             if (ddRes.data && ddRes.data.direct_url) {
@@ -46,99 +68,36 @@ router.post('/download', async (req, res) => {
                     }]
                 });
             }
-        } catch (e) {
-            // Fall through to next method
-        }
+        } catch (_) {}
 
-        // METHOD 2: Multi-Mirror Engine
-        const mirrors = [
-            'https://cobalt-api.kwiatekm.tokyo',
-            'https://api.wuk.sh',
-            'https://api.cobalt.tools'
-        ];
-
-        for (const mirror of mirrors) {
-            try {
-                const mirrorRes = await axios.post(`${mirror}/`, {
-                    url: cleanUrl,
-                    videoQuality: 'max'
-                }, {
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    timeout: 8000
-                });
-
-                if (mirrorRes.data) {
-                    // Carousel / Multi-photos
-                    if (mirrorRes.data.picker && Array.isArray(mirrorRes.data.picker)) {
-                        const formats = mirrorRes.data.picker.map((item, idx) => ({
-                            quality: `Item ${idx + 1}`,
-                            downloadUrl: item.url,
-                            extension: item.type === 'video' ? 'mp4' : 'jpg',
-                            type: item.type === 'video' ? 'video' : 'photo'
-                        }));
-
-                        return res.json({
-                            success: true,
-                            title: `Instagram_${shortcode}`,
-                            thumbnail: formats[0].downloadUrl,
-                            downloadUrl: formats[0].downloadUrl,
-                            formats: formats
-                        });
-                    }
-
-                    // Single Media
-                    if (mirrorRes.data.url) {
-                        const isPhoto = mirrorRes.data.url.includes('.jpg') || mirrorRes.data.url.includes('.webp');
-                        return res.json({
-                            success: true,
-                            title: `Instagram_${shortcode}`,
-                            thumbnail: mirrorRes.data.url,
-                            downloadUrl: mirrorRes.data.url,
-                            formats: [{
-                                quality: isPhoto ? 'HD Photo' : 'HD Video',
-                                downloadUrl: mirrorRes.data.url,
-                                extension: isPhoto ? 'jpg' : 'mp4',
-                                type: isPhoto ? 'photo' : 'video'
-                            }]
-                        });
-                    }
-                }
-            } catch (e) {
-                continue;
-            }
-        }
-
-        // METHOD 3: Public Graph Fallback
-        const graphUrl = `https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`;
-        const graphRes = await axios.get(graphUrl, {
+        // 🌟 Engine 3: Native Instagram Web API (Emulating iOS App)
+        const webApiRes = await axios.get(`https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15',
-                'Accept': 'application/json'
+                'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 289.0.0.25.109',
+                'Sec-Fetch-Site': 'same-origin'
             },
             timeout: 6000
         }).catch(() => null);
 
-        if (graphRes && graphRes.data) {
-            const item = graphRes.data.items ? graphRes.data.items[0] : (graphRes.data.graphql ? graphRes.data.graphql.shortcode_media : null);
-            if (item) {
-                const vid = item.video_versions ? item.video_versions[0].url : (item.video_url || null);
-                const pic = item.image_versions2 ? item.image_versions2.candidates[0].url : (item.display_url || null);
-                const finalUrl = vid || pic;
+        if (webApiRes && webApiRes.data) {
+            const data = webApiRes.data.graphql ? webApiRes.data.graphql.shortcode_media : (webApiRes.data.items ? webApiRes.data.items[0] : null);
+            if (data) {
+                const isVideo = data.video_versions || data.is_video;
+                const streamUrl = isVideo 
+                    ? (data.video_versions ? data.video_versions[0].url : data.video_url)
+                    : (data.image_versions2 ? data.image_versions2.candidates[0].url : data.display_url);
 
-                if (finalUrl) {
+                if (streamUrl) {
                     return res.json({
                         success: true,
                         title: `Instagram_${shortcode}`,
-                        thumbnail: finalUrl,
-                        downloadUrl: finalUrl,
+                        thumbnail: streamUrl,
+                        downloadUrl: streamUrl,
                         formats: [{
-                            quality: vid ? 'HD Video' : 'HD Photo',
-                            downloadUrl: finalUrl,
-                            extension: vid ? 'mp4' : 'jpg',
-                            type: vid ? 'video' : 'photo'
+                            quality: isVideo ? 'HD Video' : 'HD Photo',
+                            downloadUrl: streamUrl,
+                            extension: isVideo ? 'mp4' : 'jpg',
+                            type: isVideo ? 'video' : 'photo'
                         }]
                     });
                 }
@@ -147,7 +106,7 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Instagram link could not be parsed. Make sure the profile is not private.'
+            error: 'Unable to extract media. Profile might be private.'
         });
 
     } catch (err) {
