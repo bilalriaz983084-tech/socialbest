@@ -3,7 +3,7 @@ const router = express.Router();
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
-const puppeteer = require('puppeteer');
+const os = require('os');
 const youtubedl = require('yt-dlp-exec');
 
 function parseNetscapeCookiesForPuppeteer(filePath) {
@@ -41,7 +41,8 @@ router.post('/download', async (req, res) => {
         return res.status(400).json({ error: 'Facebook URL is missing' });
     }
 
-    const outputDir = path.join(__dirname, '../downloads');
+    // Vercel serverless environment mein sirf /tmp directory writable hoti hai
+    const outputDir = path.join(os.tmpdir(), 'downloads');
     if (!fs.existsSync(outputDir)) {
         fs.mkdirSync(outputDir, { recursive: true });
     }
@@ -55,7 +56,11 @@ router.post('/download', async (req, res) => {
         // 1. HIGH-RES POST ALBUM EXTRACTOR
         // ==========================================
         if (formatType === 'image' || formatType === 'photo') {
-            console.log('Launching browser to isolate genuine post images...');
+            console.log('Resolving Puppeteer module...');
+
+            // Dynamic import to eliminate ERR_REQUIRE_ESM crash
+            const puppeteerModule = await import('puppeteer');
+            const puppeteer = puppeteerModule.default || puppeteerModule;
 
             const browser = await puppeteer.launch({
                 headless: 'new',
@@ -103,10 +108,8 @@ router.post('/download', async (req, res) => {
 
             const verifiedPhotoUrls = new Set();
 
-            // Step through each slide and extract exclusively from the active Theater canvas viewport
             for (let step = 0; step < 15; step++) {
                 const activePhotoUrl = await page.evaluate(() => {
-                    // Target exclusively the spotlight/stage image element, completely ignoring comment sidebars
                     const stageSelectors = [
                         'div[data-pagelet*="PhotoViewer"] img[data-visualcompletion="media-vc-image"]',
                         'div[role="dialog"] img[data-visualcompletion="media-vc-image"]',
@@ -118,12 +121,10 @@ router.post('/download', async (req, res) => {
                     for (const sel of stageSelectors) {
                         const imgs = document.querySelectorAll(sel);
                         for (const img of imgs) {
-                            // Verify it is not inside a comment container or sidebar
                             if (img.closest('div[aria-label*="Comment"]') || img.closest('ul') || img.closest('form')) {
                                 continue;
                             }
                             const rect = img.getBoundingClientRect();
-                            // Real high-res theater photos span across the stage
                             if (rect.width >= 250 && rect.height >= 250 && img.src && img.src.includes('scontent')) {
                                 return img.src;
                             }
@@ -136,7 +137,6 @@ router.post('/download', async (req, res) => {
                     verifiedPhotoUrls.add(activePhotoUrl);
                 }
 
-                // Advance to the next photo
                 await page.evaluate(() => {
                     const nextBtn = document.querySelector('div[aria-label="Next photo"], div[aria-label="Next"], div[role="button"][aria-label*="Next"]');
                     if (nextBtn) nextBtn.click();
@@ -147,14 +147,13 @@ router.post('/download', async (req, res) => {
 
             await browser.close();
 
-            // Filter noise, sticker nodes (/t39.1997-6/), and deduplicate by clean filename ID
             const seenKeys = new Set();
             const finalImageUrls = [];
 
             for (let rawUrl of Array.from(verifiedPhotoUrls)) {
                 const isCommentNoise = 
-                    rawUrl.includes('/t39.1997-6/') || // Facebook Sticker CDN node
-                    rawUrl.includes('/t39.2365-6/') || // Facebook Animated GIF / Sticker node
+                    rawUrl.includes('/t39.1997-6/') ||
+                    rawUrl.includes('/t39.2365-6/') ||
                     rawUrl.includes('rsrc.php') ||
                     rawUrl.includes('emoji.php') ||
                     rawUrl.includes('safe_image.php') ||
@@ -186,7 +185,6 @@ router.post('/download', async (req, res) => {
             for (let i = 0; i < finalImageUrls.length; i++) {
                 try {
                     const imgRes = await axios.get(finalImageUrls[i], { responseType: 'arraybuffer' });
-
                     const fileName = `fb_album_${Date.now()}_${savedCount + 1}.jpg`;
                     const filePath = path.join(outputDir, fileName);
                     fs.writeFileSync(filePath, imgRes.data);
