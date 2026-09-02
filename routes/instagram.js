@@ -1,113 +1,65 @@
 const express = require('express');
 const router = express.Router();
+const youtubedl = require('yt-dlp-exec');
 const path = require('path');
 const fs = require('fs');
-const { exec } = require('child_process');
-const util = require('util');
-const execPromise = util.promisify(exec);
-const youtubedl = require('yt-dlp-exec');
-
-function extractShortcode(url) {
-    const match = url.match(/\/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
-    return match ? match[1] : null;
-}
-
-router.get('/status', (req, res) => {
-    res.json({ platform: 'Instagram', status: 'Connected successfully', timestamp: new Date().toISOString() });
-});
 
 router.post('/download', async (req, res) => {
-    let { url, formatType = 'auto' } = req.body;
+    const { url } = req.body;
 
     if (!url) {
-        return res.status(400).json({ error: 'Instagram URL is missing' });
-    }
-
-    const outputDir = path.join(__dirname, '../downloads');
-    if (!fs.existsSync(outputDir)) {
-        fs.mkdirSync(outputDir, { recursive: true });
-    }
-
-    const cookiesPath = path.join(__dirname, '../cookies.txt');
-    const shortcode = extractShortcode(url);
-
-    if (!shortcode) {
-        return res.status(400).json({ error: 'Invalid Instagram URL' });
+        return res.status(400).json({ success: false, error: 'URL is required' });
     }
 
     try {
-        console.log(`Processing Instagram URL: ${url} [Mode: ${formatType}]`);
+        const cookiesPath = path.resolve(__dirname, '../cookies.txt');
+        const hasCookies = fs.existsSync(cookiesPath);
 
-        const isReel = url.includes('/reel/') || formatType === 'video';
+        const options = {
+            dumpSingleJson: true,
+            noWarnings: true,
+            noCheckCertificates: true,
+            preferFreeFormats: true,
+            // Instagram block bypass karne ke flags
+            addHeader: [
+                'User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Accept-Language:en-US,en;q=0.9',
+                'Sec-Fetch-Mode:navigate'
+            ]
+        };
 
-        // ==========================================
-        // 1. VIDEOS / REELS (yt-dlp)
-        // ==========================================
-        if (isReel && formatType !== 'image') {
-            console.log('Downloading video via yt-dlp...');
-            const outputTemplate = path.join(outputDir, `ig_video_${shortcode}.mp4`);
-            const downloadArgs = [
-                url,
-                '--output', outputTemplate,
-                '--format', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                '--merge-output-format', 'mp4',
-                '--no-playlist'
-            ];
-            if (fs.existsSync(cookiesPath)) downloadArgs.push('--cookies', cookiesPath);
-            await youtubedl(downloadArgs);
-
-            return res.json({
-                success: true,
-                message: 'Instagram video downloaded successfully!',
-                files: [`ig_video_${shortcode}.mp4`],
-                folder: outputDir
-            });
+        // Agar cookies file banayi ho to include karein
+        if (hasCookies) {
+            options.cookies = cookiesPath;
         }
 
-        // ==========================================
-        // 2. AUTHENTIC PHOTOS / CAROUSEL (Instaloader via Python)
-        // ==========================================
-        console.log(`Extracting authentic post media using python -m instaloader for: ${shortcode}...`);
+        // Globally installed yt-dlp use karein
+        const info = await youtubedl(url, options);
 
-        const tempDir = path.join(outputDir, `temp_${shortcode}`);
-        if (!fs.existsSync(tempDir)) {
-            fs.mkdirSync(tempDir, { recursive: true });
-        }
+        // Best URL nikaalna
+        const downloadUrl = info.url || (info.formats && info.formats.length > 0 
+            ? info.formats[info.formats.length - 1].url 
+            : null);
 
-        // Target exact shortcode using python module
-        const cmd = `python -m instaloader --dirname-pattern="${tempDir}" --no-video-thumbnails --no-captions --no-metadata-json -- -${shortcode}`;
-        
-        await execPromise(cmd);
-
-        // Move JPG/PNG images from temp to main downloads folder
-        const tempFiles = fs.readdirSync(tempDir);
-        const savedFiles = [];
-
-        tempFiles.forEach(file => {
-            if (file.endsWith('.jpg') || file.endsWith('.png') || file.endsWith('.webp') || file.endsWith('.mp4')) {
-                const newFileName = `ig_${shortcode}_${file}`;
-                fs.renameSync(path.join(tempDir, file), path.join(outputDir, newFileName));
-                savedFiles.push(newFileName);
-            }
-        });
-
-        // Cleanup temp directory
-        fs.rmSync(tempDir, { recursive: true, force: true });
-
-        if (savedFiles.length === 0) {
-            return res.status(404).json({ success: false, error: 'No media extracted from post.' });
+        let downloadUrls = [];
+        if (info.entries && Array.isArray(info.entries)) {
+            downloadUrls = info.entries.map(e => e.url).filter(Boolean);
         }
 
         return res.json({
             success: true,
-            message: `Successfully downloaded ${savedFiles.length} authentic media item(s) for post ${shortcode}!`,
-            files: savedFiles,
-            folder: outputDir
+            title: info.title || 'Instagram_Media',
+            thumbnail: info.thumbnail || '',
+            downloadUrl: downloadUrl,
+            downloadUrls: downloadUrls.length > 0 ? downloadUrls : undefined
         });
 
     } catch (error) {
-        console.error('Instagram handler error:', error.message);
-        res.status(500).json({ success: false, error: error.message });
+        console.error('Extraction Error:', error.stderr || error.message);
+        return res.status(500).json({
+            success: false,
+            error: error.stderr || error.message
+        });
     }
 });
 
