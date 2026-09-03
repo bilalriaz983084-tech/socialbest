@@ -48,7 +48,7 @@ router.post('/download', async (req, res) => {
         const targetUrl = await cleanAndExpandFacebookUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: FastDL Gateway (Instant Sub-2s Response)
+        // 🌟 METHOD 1: FastDL Direct Conversion (< 2s)
         // ============================================================
         try {
             const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -93,7 +93,7 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 2: Apify Facebook Fast Posts Scraper (ID: OkuDbWbIxkgSRhppo)
+        // 🌟 METHOD 2: Verified Lightweight Actor (ID: OkuDbWbIxkgSRhppo)
         // ============================================================
         if (APIFY_TOKEN) {
             try {
@@ -113,36 +113,53 @@ router.post('/download', async (req, res) => {
 
                 if (items && items.length > 0) {
                     const post = items[0];
+                    console.log("Apify Facebook Raw Output:", JSON.stringify(post));
+
                     const formats = [];
 
-                    // Video extraction
-                    const videoUrl = post.video_url || 
+                    // 1. Comprehensive search for video URL
+                    let targetVideo = post.video ||
+                                     post.video_url || 
                                      post.videoUrl || 
                                      post.playable_url_quality_hd || 
                                      post.playable_url ||
-                                     post.media?.[0]?.videoUrl ||
-                                     post.attachments?.[0]?.url;
+                                     post.download_url;
 
-                    if (videoUrl && typeof videoUrl === 'string') {
+                    // Agar media array mein video ho
+                    if (!targetVideo && post.media && Array.isArray(post.media)) {
+                        const vItem = post.media.find(m => (typeof m === 'string' && m.includes('.mp4')) || m.type === 'video' || m.video_url);
+                        if (vItem) {
+                            targetVideo = typeof vItem === 'string' ? vItem : (vItem.video_url || vItem.url);
+                        }
+                    }
+
+                    if (targetVideo && typeof targetVideo === 'string') {
                         formats.push({
                             quality: 'HD Video (MP4)',
-                            downloadUrl: videoUrl,
+                            downloadUrl: targetVideo,
                             extension: 'mp4',
                             type: 'video'
                         });
                     }
 
-                    // Photo extraction (if image post or fallback)
+                    // 2. Comprehensive search for photo(s)
                     if (formats.length === 0) {
-                        const imgUrl = post.image_url || 
-                                       post.imageUrl || 
-                                       post.media?.[0]?.url || 
-                                       post.thumbnail;
+                        let targetImg = post.image ||
+                                        post.image_url || 
+                                        post.imageUrl || 
+                                        post.thumbnail;
 
-                        if (imgUrl && typeof imgUrl === 'string') {
+                        if (!targetImg && post.media && Array.isArray(post.media)) {
+                            const imgItem = post.media.find(m => typeof m === 'string' || m.type === 'image' || m.url);
+                            if (imgItem) {
+                                targetImg = typeof imgItem === 'string' ? imgItem : imgItem.url;
+                            }
+                        }
+
+                        if (targetImg && typeof targetImg === 'string') {
                             formats.push({
                                 quality: 'HD Photo (JPG)',
-                                downloadUrl: imgUrl,
+                                downloadUrl: targetImg,
                                 extension: 'jpg',
                                 type: 'photo'
                             });
