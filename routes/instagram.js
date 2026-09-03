@@ -3,8 +3,8 @@ const router = express.Router();
 const { ApifyClient } = require('apify-client');
 const axios = require('axios');
 
-// Apify Token (Isko .env mein APIFY_API_TOKEN ke naam se rakhein ya direct string yahan dein)
-const APIFY_TOKEN = process.env.APIFY_API_TOKEN || 'YAHAN_APNA_APIFY_TOKEN_DAALEIN';
+// Vercel env variable se uthayega, warna fallback token use karega
+const APIFY_TOKEN = process.env.APIFY_API_TOKEN || 'apify_api_QigZyIwNVCerPEctLzFxffpTXt6jnF48DGlI';
 
 const apifyClient = new ApifyClient({
     token: APIFY_TOKEN,
@@ -21,75 +21,71 @@ router.post('/download', async (req, res) => {
     const cleanUrl = url.trim().split('?')[0];
 
     // ============================================================
-    // 🌟 METHOD 1: Apify Instagram Scraper (100% IP Block Bypass)
+    // 🌟 METHOD 1: Apify Instagram Post Scraper (High Success Rate)
     // ============================================================
-    if (APIFY_TOKEN && APIFY_TOKEN !== 'YAHAN_APNA_APIFY_TOKEN_DAALEIN') {
-        try {
-            // Apify ka official reliable actor: apify/instagram-post-scraper
-            const run = await apifyClient.actor("apify/instagram-post-scraper").call({
-                directUrls: [cleanUrl],
-                resultsLimit: 1
-            });
+    try {
+        const run = await apifyClient.actor("apify/instagram-post-scraper").call({
+            directUrls: [cleanUrl],
+            resultsLimit: 1
+        });
 
-            const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+        const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
 
-            if (items && items.length > 0) {
-                const item = items[0];
-                const formats = [];
+        if (items && items.length > 0) {
+            const item = items[0];
+            const formats = [];
 
-                // 1. Check for Carousel (Multiple Images / Videos)
-                if (item.childPosts && item.childPosts.length > 0) {
-                    item.childPosts.forEach((child, idx) => {
-                        const isVid = child.type === 'Video' || child.videoUrl;
-                        const dlUrl = isVid ? child.videoUrl : (child.displayUrl || child.images?.[0]);
+            // Case 1: Carousel / Multi-item post (Photos + Videos mixed)
+            if (item.childPosts && item.childPosts.length > 0) {
+                item.childPosts.forEach((child, idx) => {
+                    const isVid = child.type === 'Video' || !!child.videoUrl;
+                    const dlUrl = isVid ? child.videoUrl : (child.displayUrl || child.images?.[0]);
 
-                        if (dlUrl) {
-                            formats.push({
-                                quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
-                                downloadUrl: dlUrl,
-                                extension: isVid ? 'mp4' : 'jpg',
-                                type: isVid ? 'video' : 'photo'
-                            });
-                        }
-                    });
-                }
-                // 2. Single Video / Reel
-                else if (item.videoUrl) {
-                    formats.push({
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: item.videoUrl,
-                        extension: 'mp4',
-                        type: 'video'
-                    });
-                }
-                // 3. Single Photo
-                else if (item.displayUrl) {
-                    formats.push({
-                        quality: 'HD Photo (JPG)',
-                        downloadUrl: item.displayUrl,
-                        extension: 'jpg',
-                        type: 'photo'
-                    });
-                }
-
-                if (formats.length > 0) {
-                    return res.json({
-                        success: true,
-                        title: `Instagram_${item.shortCode || Date.now()}`,
-                        thumbnail: formats[0].downloadUrl,
-                        downloadUrl: formats[0].downloadUrl,
-                        formats: formats
-                    });
-                }
+                    if (dlUrl) {
+                        formats.push({
+                            quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
+                            downloadUrl: dlUrl,
+                            extension: isVid ? 'mp4' : 'jpg',
+                            type: isVid ? 'video' : 'photo'
+                        });
+                    }
+                });
             }
-        } catch (apifyErr) {
-            console.error('Apify execution error:', apifyErr.message);
-            // Agar Apify ka quota khatam ho ya error aaye to neeche fallback par jayega
+            // Case 2: Single Video / Reel
+            else if (item.videoUrl) {
+                formats.push({
+                    quality: 'HD Video (MP4)',
+                    downloadUrl: item.videoUrl,
+                    extension: 'mp4',
+                    type: 'video'
+                });
+            }
+            // Case 3: Single Photo
+            else if (item.displayUrl) {
+                formats.push({
+                    quality: 'HD Photo (JPG)',
+                    downloadUrl: item.displayUrl,
+                    extension: 'jpg',
+                    type: 'photo'
+                });
+            }
+
+            if (formats.length > 0) {
+                return res.json({
+                    success: true,
+                    title: `Instagram_${item.shortCode || Date.now()}`,
+                    thumbnail: formats[0].downloadUrl,
+                    downloadUrl: formats[0].downloadUrl,
+                    formats: formats
+                });
+            }
         }
+    } catch (apifyErr) {
+        console.error('Apify execution error:', apifyErr.message);
     }
 
     // ============================================================
-    // 🌟 METHOD 2: FastDL Gateway Fallback (Zero Setup)
+    // 🌟 METHOD 2: FastDL Gateway Fallback
     // ============================================================
     try {
         const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
