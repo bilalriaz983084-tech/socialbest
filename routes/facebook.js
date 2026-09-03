@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Redirects resolve aur tracking queries clean
-async function resolveFacebookUrl(rawUrl) {
+// Helper: Redirect expand aur clean target URL
+async function getTargetUrl(rawUrl) {
     let clean = rawUrl.trim();
 
     if (clean.includes('facebook.com') && clean.includes('?')) {
@@ -39,147 +38,152 @@ router.post('/download', async (req, res) => {
     if (!url) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
 
     try {
-        const targetUrl = await resolveFacebookUrl(url);
-        let bestVideoUrl = null;
-        let thumbnail = null;
-        const photos = new Set();
+        const targetUrl = await getTargetUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: Native Cheerio (Extracts Videos & Photos)
+        // 🌟 GATEWAY 1: Direct SnapSave Public Worker (< 2s)
+        // Resolves both Video (MP4) and Photos (JPG)
         // ============================================================
         try {
-            const fbRes = await axios.get(targetUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Sec-Fetch-Mode': 'navigate'
-                },
-                timeout: 4000
-            });
+            const snapRes = await axios.post('https://snapsave.app/action.php', 
+                new URLSearchParams({ url: targetUrl }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Origin': 'https://snapsave.app',
+                        'Referer': 'https://snapsave.app/'
+                    },
+                    timeout: 4500
+                }
+            );
 
-            const html = fbRes.data;
-            const $ = cheerio.load(html);
+            const rawData = snapRes.data;
+            if (typeof rawData === 'string') {
+                // 1. Check for Video Download Links
+                const videoMatch = rawData.match(/href="([^"]+)"[^>]*class="button is-success/i) || 
+                                   rawData.match(/href="([^"]+)"[^>]*>Download<\/a>/i);
 
-            // 1. Check for Video Streams
-            const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || 
-                            html.match(/"playable_url_quality_hd":"([^"]+)"/);
-            const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || 
-                            html.match(/"playable_url":"([^"]+)"/);
-            const ogVideo = $('meta[property="og:video"]').attr('content') || 
-                            $('meta[property="og:video:secure_url"]').attr('content');
-
-            if (hdMatch && hdMatch[1]) {
-                bestVideoUrl = JSON.parse(`"${hdMatch[1]}"`);
-            } else if (sdMatch && sdMatch[1]) {
-                bestVideoUrl = JSON.parse(`"${sdMatch[1]}"`);
-            } else if (ogVideo) {
-                bestVideoUrl = ogVideo;
-            }
-
-            // Thumbnail agar available ho
-            thumbnail = $('meta[property="og:image"]').attr('content') || null;
-
-            // 2. Agar video nahi hai, to Photos extract karein
-            if (!bestVideoUrl) {
-                // OpenGraph Main Photo
-                if (thumbnail && !thumbnail.includes('static.xx.fbcdn.net')) {
-                    photos.add(thumbnail);
+                if (videoMatch && videoMatch[1]) {
+                    const dlUrl = videoMatch[1].replace(/&amp;/g, '&');
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: dlUrl,
+                        downloadUrl: dlUrl,
+                        formats: [{
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: dlUrl,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
+                    });
                 }
 
-                // Scan embedded JSON blocks for High-Res Post Photos
-                const imgRegex = /"image":\{"uri":"([^"]+)"\}/g;
-                let match;
-                while ((match = imgRegex.exec(html)) !== null) {
-                    try {
-                        const cleanImg = JSON.parse(`"${match[1]}"`).replace(/&amp;/g, '&');
-                        if (cleanImg.includes('fbcdn.net') && !cleanImg.includes('/rsrc.php/')) {
-                            photos.add(cleanImg);
-                        }
-                    } catch (_) {}
+                // 2. Check for Photos / Album Images
+                const photoMatches = [...rawData.matchAll(/href="([^"]+)"[^>]*class="button is-download/gi)];
+                if (photoMatches.length > 0) {
+                    const formats = photoMatches.map((m, idx) => ({
+                        quality: `HD Photo ${idx + 1} (JPG)`,
+                        downloadUrl: m[1].replace(/&amp;/g, '&'),
+                        extension: 'jpg',
+                        type: 'photo'
+                    }));
+
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: formats[0].downloadUrl,
+                        downloadUrl: formats[0].downloadUrl,
+                        formats: formats
+                    });
                 }
             }
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 2: Cobalt Fallback (Sirf Video ke liye)
+        // 🌟 GATEWAY 2: FastDL Dedicated Converter (< 2s)
         // ============================================================
-        if (!bestVideoUrl && photos.size === 0) {
-            const cobaltServers = [
-                'https://cobalt-api.kwiatekm.tokyo',
-                'https://api.wuk.sh',
-                'https://co.wuk.sh'
-            ];
+        try {
+            const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
+                url: targetUrl
+            }, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Origin': 'https://fastdl.app',
+                    'Referer': 'https://fastdl.app/'
+                },
+                timeout: 4000
+            });
 
-            for (const server of cobaltServers) {
-                try {
-                    const cRes = await axios.post(`${server}/`, {
-                        url: targetUrl,
-                        videoQuality: '720'
-                    }, {
-                        headers: {
-                            'Accept': 'application/json',
-                            'Content-Type': 'application/json'
-                        },
-                        timeout: 3000
-                    });
+            if (fdlRes.data && fdlRes.data.url) {
+                const results = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
+                const formats = [];
 
-                    if (cRes.data && cRes.data.url) {
-                        bestVideoUrl = cRes.data.url;
-                        thumbnail = thumbnail || cRes.data.url;
-                        break;
+                results.forEach((item, idx) => {
+                    const dl = item.url || item;
+                    if (dl && typeof dl === 'string') {
+                        const isVideo = dl.includes('.mp4') || item.type === 'video';
+                        formats.push({
+                            quality: isVideo ? 'HD Video (MP4)' : `HD Photo ${idx + 1} (JPG)`,
+                            downloadUrl: dl,
+                            extension: isVideo ? 'mp4' : 'jpg',
+                            type: isVideo ? 'video' : 'photo'
+                        });
                     }
-                } catch (_) {}
+                });
+
+                if (formats.length > 0) {
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: formats[0].downloadUrl,
+                        downloadUrl: formats[0].downloadUrl,
+                        formats: formats
+                    });
+                }
             }
-        }
+        } catch (_) {}
 
         // ============================================================
-        // Response Formatting
+        // 🌟 GATEWAY 3: Cobalt Stream Relay Fallback (< 2.5s)
         // ============================================================
-        // Case A: Video Post
-        if (bestVideoUrl) {
-            return res.json({
-                success: true,
-                title: `Facebook_${Date.now()}`,
-                thumbnail: thumbnail || bestVideoUrl,
-                downloadUrl: bestVideoUrl,
-                formats: [
-                    {
+        try {
+            const cRes = await axios.post('https://cobalt-api.kwiatekm.tokyo/', {
+                url: targetUrl,
+                videoQuality: '720'
+            }, {
+                headers: {
+                    'Accept': 'application/json',
+                    'Content-Type': 'application/json'
+                },
+                timeout: 3500
+            });
+
+            if (cRes.data && cRes.data.url) {
+                return res.json({
+                    success: true,
+                    title: `Facebook_${Date.now()}`,
+                    thumbnail: cRes.data.url,
+                    downloadUrl: cRes.data.url,
+                    formats: [{
                         quality: 'HD Video (MP4)',
-                        downloadUrl: bestVideoUrl,
+                        downloadUrl: cRes.data.url,
                         extension: 'mp4',
                         type: 'video'
-                    }
-                ]
-            });
-        }
-
-        // Case B: Photo / Carousel Post
-        if (photos.size > 0) {
-            const photoList = Array.from(photos);
-            const formats = photoList.map((imgUrl, idx) => ({
-                quality: `HD Photo ${idx + 1} (JPG)`,
-                downloadUrl: imgUrl,
-                extension: 'jpg',
-                type: 'photo'
-            }));
-
-            return res.json({
-                success: true,
-                title: `Facebook_${Date.now()}`,
-                thumbnail: photoList[0],
-                downloadUrl: photoList[0],
-                formats: formats
-            });
-        }
+                    }]
+                });
+            }
+        } catch (_) {}
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook media could not be parsed. Verify the post/reel is public.'
+            error: 'Facebook media is private or could not be reached.'
         });
 
     } catch (err) {
-        console.error('Facebook Direct Error:', err.message);
+        console.error('Facebook General Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
