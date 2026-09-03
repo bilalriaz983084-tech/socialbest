@@ -11,53 +11,64 @@ router.post('/download', async (req, res) => {
     if (!url) return res.status(400).json({ success: false, error: 'Instagram URL is required' });
 
     try {
-        const cleanUrl = url.trim().split('?')[0];
+        let cleanUrl = url.trim().split('?')[0];
         const match = cleanUrl.match(/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
         if (!match) return res.status(400).json({ success: false, error: 'Invalid Instagram URL format' });
+        
         const shortcode = match[1];
 
-        // ENGINE 1: GraphQL Multi-Item Parser (Carousel / Multi-Video / Multi-Photo)
+        // 🌟 GATEWAY 1: Instagram Mobile Android Internal Endpoint
         try {
-            const gqlRes = await axios.get(`https://www.instagram.com/graphql/query/?query_hash=b3055c01b4b222b8a47dc12b090e4e64&variables=${encodeURIComponent(JSON.stringify({ shortcode }))}`, {
+            const mobileRes = await axios.get(`https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X)',
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36 Instagram 321.0.0.39.108',
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                    'Sec-Fetch-Mode': 'cors',
                     'X-IG-App-ID': '936619743392459'
                 },
                 timeout: 8000
             });
 
-            if (gqlRes.data && gqlRes.data.data && gqlRes.data.data.shortcode_media) {
-                const media = gqlRes.data.data.shortcode_media;
+            const items = mobileRes.data?.items || mobileRes.data?.graphql?.shortcode_media;
+            if (items) {
+                const item = Array.isArray(items) ? items[0] : items;
                 const formats = [];
 
-                // Multi-Items (Carousel / Slideshow)
-                if (media.edge_sidecar_to_children && media.edge_sidecar_to_children.edges) {
-                    media.edge_sidecar_to_children.edges.forEach((edge, idx) => {
-                        const node = edge.node;
-                        const isVid = node.is_video;
-                        const dl = isVid ? node.video_url : node.display_url;
+                // 1. Check Carousels / Slideshow
+                const carouselMedia = item.carousel_media || item.edge_sidecar_to_children?.edges;
+                if (carouselMedia && carouselMedia.length > 0) {
+                    carouselMedia.forEach((cItem, idx) => {
+                        const node = cItem.node || cItem;
+                        const isVid = node.video_versions?.length > 0 || node.is_video;
+                        const dlUrl = isVid 
+                            ? (node.video_versions ? node.video_versions[0].url : node.video_url)
+                            : (node.image_versions2 ? node.image_versions2.candidates[0].url : node.display_url);
+
                         formats.push({
                             quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
-                            downloadUrl: dl,
+                            downloadUrl: dlUrl,
                             extension: isVid ? 'mp4' : 'jpg',
                             type: isVid ? 'video' : 'photo'
                         });
                     });
-                } 
-                // Single Video
-                else if (media.is_video && media.video_url) {
+                }
+                // 2. Single Video / Reel
+                else if (item.video_versions?.length > 0 || item.video_url) {
+                    const vidUrl = item.video_versions ? item.video_versions[0].url : item.video_url;
                     formats.push({
                         quality: 'HD Video (MP4)',
-                        downloadUrl: media.video_url,
+                        downloadUrl: vidUrl,
                         extension: 'mp4',
                         type: 'video'
                     });
-                } 
-                // Single Image
-                else if (media.display_url) {
+                }
+                // 3. Single Photo
+                else if (item.image_versions2?.candidates?.length > 0 || item.display_url) {
+                    const imgUrl = item.image_versions2 ? item.image_versions2.candidates[0].url : item.display_url;
                     formats.push({
                         quality: 'HD Photo (JPG)',
-                        downloadUrl: media.display_url,
+                        downloadUrl: imgUrl,
                         extension: 'jpg',
                         type: 'photo'
                     });
@@ -75,41 +86,96 @@ router.post('/download', async (req, res) => {
             }
         } catch (_) {}
 
-        // ENGINE 2: FastDL Direct Fallback
-        const apiRes = await axios.post('https://api.fastdl.app/api/convert', {
-            url: `https://www.instagram.com/reel/${shortcode}/`
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            },
-            timeout: 8000
-        }).catch(() => null);
+        // 🌟 GATEWAY 2: Cobalt V10 Stream Aggregator (Bypasses Datacenter Blocks)
+        const cobaltMirrors = [
+            'https://cobalt-api.kwiatekm.tokyo',
+            'https://api.wuk.sh'
+        ];
 
-        if (apiRes && apiRes.data && apiRes.data.url) {
-            const results = Array.isArray(apiRes.data.url) ? apiRes.data.url : [apiRes.data.url];
-            const formats = results.map((item, idx) => {
-                const dl = item.url || item;
-                const isVid = dl.includes('.mp4') || (item.type && item.type === 'video');
-                return {
-                    quality: results.length > 1 ? `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})` : (isVid ? 'HD Video' : 'HD Photo'),
-                    downloadUrl: dl,
-                    extension: isVid ? 'mp4' : 'jpg',
-                    type: isVid ? 'video' : 'photo'
-                };
-            });
+        for (const mirror of cobaltMirrors) {
+            try {
+                const cobRes = await axios.post(`${mirror}/`, {
+                    url: `https://www.instagram.com/p/${shortcode}/`,
+                    videoQuality: 'max'
+                }, {
+                    headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+                    timeout: 8000
+                });
 
-            return res.json({
-                success: true,
-                title: `Instagram_${shortcode}`,
-                thumbnail: formats[0].downloadUrl,
-                downloadUrl: formats[0].downloadUrl,
-                formats: formats
-            });
+                if (cobRes.data && cobRes.data.url) {
+                    return res.json({
+                        success: true,
+                        title: `Instagram_${shortcode}`,
+                        thumbnail: cobRes.data.url,
+                        downloadUrl: cobRes.data.url,
+                        formats: [{
+                            quality: 'HD Quality (MP4)',
+                            downloadUrl: cobRes.data.url,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
+                    });
+                } else if (cobRes.data && cobRes.data.picker) {
+                    const formats = cobRes.data.picker.map((p, idx) => ({
+                        quality: `Item ${idx + 1} (${p.type === 'photo' ? 'Photo' : 'Video'})`,
+                        downloadUrl: p.url,
+                        extension: p.type === 'photo' ? 'jpg' : 'mp4',
+                        type: p.type === 'photo' ? 'photo' : 'video'
+                    }));
+
+                    return res.json({
+                        success: true,
+                        title: `Instagram_${shortcode}`,
+                        thumbnail: formats[0].downloadUrl,
+                        downloadUrl: formats[0].downloadUrl,
+                        formats: formats
+                    });
+                }
+            } catch (_) {
+                continue;
+            }
         }
 
-        return res.status(400).json({ success: false, error: 'Instagram link could not be parsed. Verify the reel is public.' });
+        // 🌟 GATEWAY 3: SnapInsta Web Form Gateway
+        try {
+            const snapRes = await axios.post('https://snapinsta.app/action.php',
+                new URLSearchParams({ url: `https://www.instagram.com/reel/${shortcode}/`, action: 'post' }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                    },
+                    timeout: 8000
+                }
+            );
+
+            if (snapRes.data) {
+                const vidMatch = snapRes.data.match(/href="([^"]+)" class="btn download-media/);
+                if (vidMatch && vidMatch[1]) {
+                    const dlUrl = vidMatch[1].replace(/&amp;/g, '&');
+                    return res.json({
+                        success: true,
+                        title: `Instagram_${shortcode}`,
+                        thumbnail: dlUrl,
+                        downloadUrl: dlUrl,
+                        formats: [{
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: dlUrl,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
+                    });
+                }
+            }
+        } catch (_) {}
+
+        return res.status(400).json({
+            success: false,
+            error: 'Instagram link could not be parsed. Verify the reel is public.'
+        });
+
     } catch (err) {
+        console.error('Instagram Route Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
