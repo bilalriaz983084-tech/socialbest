@@ -8,16 +8,17 @@ router.get('/status', (req, res) => {
 
 router.post('/download', async (req, res) => {
     const { url } = req.body;
-    if (!url) {
-        return res.status(400).json({ success: false, error: 'TikTok URL is required' });
-    }
+    if (!url) return res.status(400).json({ success: false, error: 'TikTok URL is required' });
 
     try {
         const response = await axios.post(
             'https://www.tikwm.com/api/',
             new URLSearchParams({ url: url.trim(), hd: '1' }),
             {
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                },
                 timeout: 10000
             }
         );
@@ -26,12 +27,13 @@ router.post('/download', async (req, res) => {
             const data = response.data.data;
             const formats = [];
 
-            // CASE 1: Photo Slideshow / Album Posts
+            // 1. Agar MULTIPLE IMAGES / PHOTOS hain (Saari images nikalna)
             if (data.images && Array.isArray(data.images) && data.images.length > 0) {
                 data.images.forEach((imgUrl, idx) => {
+                    const fullImg = imgUrl.startsWith('http') ? imgUrl : `https://www.tikwm.com${imgUrl}`;
                     formats.push({
                         quality: `Photo ${idx + 1} (HD)`,
-                        downloadUrl: imgUrl,
+                        downloadUrl: fullImg,
                         extension: 'jpg',
                         type: 'photo'
                     });
@@ -39,41 +41,39 @@ router.post('/download', async (req, res) => {
 
                 return res.json({
                     success: true,
-                    title: data.title || `TikTok_Photos_${Date.now()}`,
-                    thumbnail: data.images[0],
-                    downloadUrl: data.images[0],
+                    title: data.title ? `TikTok_${data.title.substring(0, 20)}` : `TikTok_Photos_${Date.now()}`,
+                    thumbnail: formats[0].downloadUrl,
+                    downloadUrl: formats[0].downloadUrl,
                     formats: formats
                 });
             }
 
-            // CASE 2: Single Video Post (Strictly 1 No-Watermark HD Video)
-            const cleanVideoUrl = data.hdplay || data.play;
+            // 2. Agar VIDEO hai (Strictly 1 No-Watermark HD video)
+            let cleanVideo = data.play || data.hdplay;
+            if (cleanVideo) {
+                if (!cleanVideo.startsWith('http')) {
+                    cleanVideo = `https://www.tikwm.com${cleanVideo}`;
+                }
 
-            if (cleanVideoUrl) {
                 formats.push({
                     quality: 'HD Video (No Watermark)',
-                    downloadUrl: cleanVideoUrl,
+                    downloadUrl: cleanVideo,
                     extension: 'mp4',
                     type: 'video'
                 });
 
                 return res.json({
                     success: true,
-                    title: data.title || `TikTok_Video_${Date.now()}`,
-                    thumbnail: data.cover || cleanVideoUrl,
-                    downloadUrl: cleanVideoUrl,
+                    title: data.title ? `TikTok_${data.title.substring(0, 20)}` : `TikTok_Video_${Date.now()}`,
+                    thumbnail: data.cover || cleanVideo,
+                    downloadUrl: cleanVideo,
                     formats: formats
                 });
             }
         }
 
-        return res.status(400).json({
-            success: false,
-            error: 'Could not resolve TikTok media. Post might be private or removed.'
-        });
-
+        return res.status(400).json({ success: false, error: 'Could not extract media from TikTok.' });
     } catch (err) {
-        console.error('TikTok Route Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
