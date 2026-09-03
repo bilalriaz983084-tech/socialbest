@@ -7,93 +7,130 @@ router.get('/status', (req, res) => {
 });
 
 router.post('/download', async (req, res) => {
-    let { url, formatType = 'video' } = req.body;
+    const { url } = req.body;
     if (!url) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
 
+    let targetUrl = url.trim();
+
+    // 🌟 Step 1: Expand Short URLs (e.g. fb.watch)
     try {
-        let cleanUrl = url.trim();
-
-        // Step 1: Follow /share/ redirect if present
-        if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch')) {
-            try {
-                const headRes = await axios.get(cleanUrl, {
-                    maxRedirects: 5,
-                    validateStatus: null,
-                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-                    timeout: 6000
-                });
-                if (headRes.request && headRes.request.res && headRes.request.res.responseUrl) {
-                    cleanUrl = headRes.request.res.responseUrl;
-                }
-            } catch (_) {}
+        if (targetUrl.includes('fb.watch') || targetUrl.includes('facebook.com/share')) {
+            const redirectCheck = await axios.get(targetUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                maxRedirects: 5,
+                timeout: 5000
+            });
+            targetUrl = redirectCheck.request?.res?.responseUrl || targetUrl;
         }
+    } catch (_) {}
 
-        const targetUrl = cleanUrl.replace('m.facebook.com', 'www.facebook.com');
+    // ============================================================
+    // 🌟 METHOD 1: High-Speed Direct Stream Resolver
+    // ============================================================
+    try {
+        const streamRes = await axios.get(`https://api.vkrdownloader.vercel.app/server?vkr=${encodeURIComponent(targetUrl)}`, {
+            timeout: 6000
+        });
 
-        // Step 2: Pure HTML Extraction
-        const pageRes = await axios.get(targetUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            },
-            timeout: 9000
-        }).catch(() => null);
+        if (streamRes.data && streamRes.data.data) {
+            const data = streamRes.data.data;
+            const dlUrl = data.url || data.download_url;
 
-        if (pageRes && pageRes.data) {
-            const html = pageRes.data;
-
-            // Agar PHOTO Post hai
-            if (formatType === 'image' || formatType === 'photo' || targetUrl.includes('/photo')) {
-                const photoMatches = [
-                    html.match(/property="og:image"\s+content="([^"]+)"/),
-                    html.match(/"image":\{"uri":"([^"]+)"\}/)
-                ];
-
-                for (const match of photoMatches) {
-                    if (match && match[1]) {
-                        const directPhoto = match[1].replace(/&amp;/g, '&').replace(/\\/g, '');
-                        return res.json({
-                            success: true,
-                            title: `Facebook_Photo_${Date.now()}`,
-                            thumbnail: directPhoto,
-                            downloadUrl: directPhoto,
-                            formats: [{
-                                quality: 'HD Photo',
-                                downloadUrl: directPhoto,
-                                extension: 'jpg',
-                                type: 'photo'
-                            }]
-                        });
-                    }
-                }
-            }
-
-            // Agar VIDEO Post hai (Strict Single Video Selection: No Duplicates)
-            const hdMatch = html.match(/playable_url_quality_hd":"([^"]+)"/);
-            const sdMatch = html.match(/playable_url":"([^"]+)"/);
-
-            const videoUrl = hdMatch ? JSON.parse(`"${hdMatch[1]}"`) : (sdMatch ? JSON.parse(`"${sdMatch[1]}"`) : null);
-
-            if (videoUrl) {
+            if (dlUrl) {
                 return res.json({
                     success: true,
-                    title: `Facebook_Video_${Date.now()}`,
-                    thumbnail: videoUrl,
-                    downloadUrl: videoUrl,
+                    title: `Facebook_${Date.now()}`,
+                    thumbnail: dlUrl,
+                    downloadUrl: dlUrl,
                     formats: [{
-                        quality: hdMatch ? 'HD Quality (MP4)' : 'SD Quality (MP4)',
-                        downloadUrl: videoUrl,
+                        quality: 'HD Video (MP4)',
+                        downloadUrl: dlUrl,
                         extension: 'mp4',
                         type: 'video'
                     }]
                 });
             }
         }
+    } catch (_) {}
 
-        return res.status(400).json({ success: false, error: 'Facebook media could not be resolved. Ensure post is public.' });
-    } catch (err) {
-        return res.status(500).json({ success: false, error: err.message });
-    }
+    // ============================================================
+    // 🌟 METHOD 2: SnapSave Facebook Video Pipeline
+    // ============================================================
+    try {
+        const snapRes = await axios.post('https://snapsave.app/action.php', 
+            new URLSearchParams({ url: targetUrl }).toString(),
+            {
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 6000
+            }
+        );
+
+        const html = snapRes.data;
+        if (typeof html === 'string') {
+            const hdMatch = html.match(/href="([^"]+)"[^>]*>Render/i) || 
+                            html.match(/href="([^"]+)"[^>]*>Download<\/a>/i) ||
+                            html.match(/href="([^"]+)" class="button is-success/i);
+
+            if (hdMatch && hdMatch[1]) {
+                const finalUrl = hdMatch[1].replace(/&amp;/g, '&');
+                return res.json({
+                    success: true,
+                    title: `Facebook_${Date.now()}`,
+                    thumbnail: finalUrl,
+                    downloadUrl: finalUrl,
+                    formats: [{
+                        quality: 'HD Quality (MP4)',
+                        downloadUrl: finalUrl,
+                        extension: 'mp4',
+                        type: 'video'
+                    }]
+                });
+            }
+        }
+    } catch (_) {}
+
+    // ============================================================
+    // 🌟 METHOD 3: FastDL Universal Converter
+    // ============================================================
+    try {
+        const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
+            url: targetUrl
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Origin': 'https://fastdl.app',
+                'Referer': 'https://fastdl.app/'
+            },
+            timeout: 6000
+        });
+
+        if (fdlRes.data && fdlRes.data.url) {
+            const dl = Array.isArray(fdlRes.data.url) ? fdlRes.data.url[0].url : (fdlRes.data.url.url || fdlRes.data.url);
+            return res.json({
+                success: true,
+                title: `Facebook_${Date.now()}`,
+                thumbnail: dl,
+                downloadUrl: dl,
+                formats: [{
+                    quality: 'HD Video (MP4)',
+                    downloadUrl: dl,
+                    extension: 'mp4',
+                    type: 'video'
+                }]
+            });
+        }
+    } catch (_) {}
+
+    return res.status(400).json({
+        success: false,
+        error: 'Facebook video could not be parsed. Verify the video/reel is public.'
+    });
 });
 
 module.exports = router;
