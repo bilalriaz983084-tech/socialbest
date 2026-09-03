@@ -13,7 +13,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Redirects resolve karein aur tracking parameters clean karein
+// Helper: Redirects expand karein aur clean URL banayein
 async function cleanAndExpandFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
@@ -60,7 +60,7 @@ router.post('/download', async (req, res) => {
                     'Origin': 'https://fastdl.app',
                     'Referer': 'https://fastdl.app/'
                 },
-                timeout: 4500
+                timeout: 4000
             });
 
             if (fdlRes.data && fdlRes.data.url) {
@@ -93,20 +93,19 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 2: Verified Apify Actor (ID: 3fjTw1dfOOEYaG4eI)
+        // 🌟 METHOD 2: Apify Facebook Fast Posts Scraper (ID: OkuDbWbIxkgSRhppo)
         // ============================================================
         if (APIFY_TOKEN) {
             try {
                 const input = {
-                    urls: [targetUrl],
-                    includeCommentText: false,
-                    proxy: {
-                        useApifyProxy: true
-                    }
+                    "direct_urls": [
+                        {
+                            "url": targetUrl
+                        }
+                    ]
                 };
 
-                // Wait secs 8 rakha hai taake container build pull hone ka time mile
-                const run = await apifyClient.actor("3fjTw1dfOOEYaG4eI").call(input, {
+                const run = await apifyClient.actor("OkuDbWbIxkgSRhppo").call(input, {
                     waitSecs: 8
                 });
 
@@ -116,14 +115,13 @@ router.post('/download', async (req, res) => {
                     const post = items[0];
                     const formats = [];
 
-                    // Exhaustive search across all possible video attributes in actor output
-                    const videoUrl = post.videoUrl || 
-                                     post.media?.[0]?.videoUrl || 
-                                     post.media?.[0]?.url ||
-                                     post.attachments?.[0]?.url || 
-                                     post.attachments?.[0]?.playable_url ||
-                                     post.playable_url_quality_hd ||
-                                     post.playable_url;
+                    // Video extraction
+                    const videoUrl = post.video_url || 
+                                     post.videoUrl || 
+                                     post.playable_url_quality_hd || 
+                                     post.playable_url ||
+                                     post.media?.[0]?.videoUrl ||
+                                     post.attachments?.[0]?.url;
 
                     if (videoUrl && typeof videoUrl === 'string') {
                         formats.push({
@@ -134,10 +132,14 @@ router.post('/download', async (req, res) => {
                         });
                     }
 
-                    // Fallback to Photo if post is an image
+                    // Photo extraction (if image post or fallback)
                     if (formats.length === 0) {
-                        const imgUrl = post.imageUrl || post.media?.[0]?.url || post.images?.[0];
-                        if (imgUrl) {
+                        const imgUrl = post.image_url || 
+                                       post.imageUrl || 
+                                       post.media?.[0]?.url || 
+                                       post.thumbnail;
+
+                        if (imgUrl && typeof imgUrl === 'string') {
                             formats.push({
                                 quality: 'HD Photo (JPG)',
                                 downloadUrl: imgUrl,
@@ -150,7 +152,7 @@ router.post('/download', async (req, res) => {
                     if (formats.length > 0) {
                         return res.json({
                             success: true,
-                            title: `Facebook_${post.id || Date.now()}`,
+                            title: `Facebook_${post.id || post.post_id || Date.now()}`,
                             thumbnail: formats[0].downloadUrl,
                             downloadUrl: formats[0].downloadUrl,
                             formats: formats
@@ -158,13 +160,13 @@ router.post('/download', async (req, res) => {
                     }
                 }
             } catch (apifyErr) {
-                console.error('Apify Facebook Error:', apifyErr.message);
+                console.error('Apify Facebook Fast Error:', apifyErr.message);
             }
         }
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook video could not be parsed. Verify the post/reel is public.'
+            error: 'Facebook media could not be parsed. Verify the post/reel is public.'
         });
 
     } catch (err) {
