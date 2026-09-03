@@ -1,12 +1,18 @@
 const express = require('express');
 const router = express.Router();
+const { ApifyClient } = require('apify-client');
 const axios = require('axios');
 
-router.get('/status', (req, res) => {
-    res.json({ platform: 'Facebook', status: 'Connected', timestamp: new Date().toISOString() });
+// Apify Client setup (Wohi token jo Instagram ke liye chal raha hai)
+const client = new ApifyClient({
+    token: process.env.APIFY_TOKEN || 'YOUR_APIFY_API_TOKEN_HERE',
 });
 
-// Helper: Real Unshortener for /share/, fb.watch & Redirects
+router.get('/status', (req, res) => {
+    res.json({ platform: 'Facebook (Apify)', status: 'Connected successfully', timestamp: new Date().toISOString() });
+});
+
+// Helper: Resolve Facebook share/short URLs
 async function resolveFacebookUrl(inputUrl) {
     try {
         let clean = inputUrl.trim();
@@ -35,15 +41,6 @@ async function resolveFacebookUrl(inputUrl) {
     return inputUrl.split('?')[0];
 }
 
-function cleanDecodedUrl(raw) {
-    if (!raw) return null;
-    try {
-        return JSON.parse(`"${raw}"`);
-    } catch (_) {
-        return raw.replace(/\\u0025/g, '%').replace(/\\u0026/g, '&').replace(/\\\//g, '/');
-    }
-}
-
 router.post('/download', async (req, res) => {
     const rawUrl = req.body?.url || req.body?.link || req.body?.videoUrl || req.query?.url;
     
@@ -55,126 +52,96 @@ router.post('/download', async (req, res) => {
     }
 
     try {
-        let cleanUrl = rawUrl.trim();
-        
-        if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch')) {
-            cleanUrl = await resolveFacebookUrl(cleanUrl);
-        } else {
-            cleanUrl = cleanUrl.split('?')[0];
+        let targetUrl = rawUrl.trim();
+        if (targetUrl.includes('/share/') || targetUrl.includes('fb.watch')) {
+            targetUrl = await resolveFacebookUrl(targetUrl);
         }
 
-        console.log(`[Facebook] Target Process URL: ${cleanUrl}`);
+        console.log(`[Facebook Apify] Processing URL: ${targetUrl}`);
 
-        let videoDownloadUrl = null;
-        let thumbnail = null;
+        // Actor configuration optimized for instant single-post extraction
+        const input = {
+            startUrls: [{ url: targetUrl }],
+            resultsLimit: 1,
+            captionText: false
+        };
 
-        // ============================================================
-        // 🌟 ENGINE 1: Mobile Basic HTML5 Direct Stream Scraper (< 1.5s)
-        // ============================================================
-        try {
-            const mUrl = cleanUrl.replace('www.facebook.com', 'mbasic.facebook.com')
-                                 .replace('web.facebook.com', 'mbasic.facebook.com');
+        // Run Facebook Posts Scraper Actor (KoJrdxJCTtpon81KY)
+        const run = await client.actor("KoJrdxJCTtpon81KY").call(input, {
+            timeoutSecs: 25
+        });
 
-            const mRes = await axios.get(mUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                },
-                timeout: 3500
+        const { items } = await client.dataset(run.defaultDatasetId).listItems();
+
+        if (!items || items.length === 0) {
+            return res.status(404).json({
+                success: false,
+                error: 'Could not fetch media. Please make sure the Facebook post is public.'
             });
-
-            const mHtml = mRes.data;
-            if (typeof mHtml === 'string') {
-                const redirectMatch = mHtml.match(/href="(\/video_redirect\/[^"]+)"/);
-                const directSrcMatch = mHtml.match(/src="([^"]+\.mp4[^"]*)"/);
-
-                if (redirectMatch && redirectMatch[1]) {
-                    const parsed = new URL('https://mbasic.facebook.com' + redirectMatch[1]);
-                    const srcParam = parsed.searchParams.get('src');
-                    if (srcParam) videoDownloadUrl = decodeURIComponent(srcParam);
-                } else if (directSrcMatch && directSrcMatch[1]) {
-                    videoDownloadUrl = directSrcMatch[1].replace(/&amp;/g, '&');
-                }
-            }
-        } catch (mErr) {
-            console.log('[Facebook] Mobile Basic engine skipped:', mErr.message);
         }
 
-        // ============================================================
-        // 🌟 ENGINE 2: Meta Direct Regex (HD/SD native fallback)
-        // ============================================================
-        if (!videoDownloadUrl) {
-            try {
-                const pageRes = await axios.get(cleanUrl, {
-                    headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                        'Accept-Language': 'en-US,en;q=0.9'
-                    },
-                    timeout: 4000
-                });
+        const post = items[0];
 
-                const html = pageRes.data;
-                const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
-                const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
-                const thumbMatch = html.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
+        // 🌟 1. Video Check (Reels / Watch / Post Videos)
+        const videoUrl = post.videoUrl || post.video_url || post.media?.find(m => m.type === 'video')?.url;
+        const thumbnail = post.thumbnail || post.thumbnailUrl || post.image || null;
 
-                const chosen = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
-                if (chosen) {
-                    videoDownloadUrl = cleanDecodedUrl(chosen);
-                    if (thumbMatch && thumbMatch[1]) {
-                        thumbnail = cleanDecodedUrl(thumbMatch[1]);
-                    }
-                }
-            } catch (dErr) {
-                console.log('[Facebook] Direct Meta engine skipped:', dErr.message);
-            }
-        }
-
-        // ============================================================
-        // 🌟 ENGINE 3: Siputzx Public Cluster API
-        // ============================================================
-        if (!videoDownloadUrl) {
-            try {
-                const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 4500
-                });
-
-                if (apiRes.data?.status && apiRes.data?.data) {
-                    const data = apiRes.data.data;
-                    videoDownloadUrl = data.hd || data.sd || data.video || (Array.isArray(data) ? data[0]?.url : null);
-                    thumbnail = data.thumbnail || thumbnail;
-                }
-            } catch (sErr) {
-                console.log('[Facebook] Siputzx engine skipped:', sErr.message);
-            }
-        }
-
-        // ============================================================
-        // Strictly Video Response (Returns only MP4)
-        // ============================================================
-        if (videoDownloadUrl) {
+        if (videoUrl) {
+            console.log('[Facebook Apify] Video extracted successfully');
             return res.json({
                 success: true,
                 type: 'video',
-                title: `Facebook_Video_${Date.now()}`,
-                thumbnail: thumbnail || videoDownloadUrl,
-                downloadUrl: videoDownloadUrl,
+                title: post.text ? post.text.slice(0, 40) : `Facebook_Video_${Date.now()}`,
+                thumbnail: thumbnail || videoUrl,
+                downloadUrl: videoUrl,
                 formats: [{
                     quality: 'HD Video (MP4)',
-                    downloadUrl: videoDownloadUrl,
+                    downloadUrl: videoUrl,
                     extension: 'mp4',
                     type: 'video'
                 }]
             });
         }
 
+        // 🌟 2. Photo / Album Check (Images Only)
+        let images = [];
+        if (post.imageUrl) images.push(post.imageUrl);
+        if (post.images && Array.isArray(post.images)) {
+            images.push(...post.images.map(img => typeof img === 'string' ? img : img.url));
+        }
+        if (post.media && Array.isArray(post.media)) {
+            const mediaImgs = post.media.filter(m => m.type === 'photo' || m.type === 'image').map(m => m.url);
+            images.push(...mediaImgs);
+        }
+
+        // Remove duplicates
+        images = [...new Set(images.filter(Boolean))];
+
+        if (images.length > 0) {
+            console.log(`[Facebook Apify] Extracted ${images.length} photos successfully`);
+            return res.json({
+                success: true,
+                type: 'image',
+                title: post.text ? post.text.slice(0, 40) : `Facebook_Photo_${Date.now()}`,
+                thumbnail: images[0],
+                downloadUrl: images[0],
+                images: images,
+                formats: images.map((imgUrl, index) => ({
+                    quality: `HD Photo ${index + 1} (JPG)`,
+                    downloadUrl: imgUrl,
+                    extension: 'jpg',
+                    type: 'photo'
+                }))
+            });
+        }
+
         return res.status(400).json({
             success: false,
-            error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
+            error: 'No downloadable video or photo stream found in this post.'
         });
 
     } catch (err) {
-        console.error('[Facebook] Fatal Catch Error:', err.message);
+        console.error('[Facebook Apify Fatal Error]:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
