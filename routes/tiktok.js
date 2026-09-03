@@ -13,7 +13,7 @@ router.post('/download', async (req, res) => {
     try {
         const response = await axios.post(
             'https://www.tikwm.com/api/',
-            new URLSearchParams({ url: url.trim(), hd: '1' }),
+            new URLSearchParams({ url: url.trim() }),
             {
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded',
@@ -27,8 +27,7 @@ router.post('/download', async (req, res) => {
             const data = response.data.data;
 
             // ============================================================
-            // CASE 1: AGAR POST MEIN PHOTOS / ALBUM HAI
-            // (Yahan se foran return ho jayega, background music video bilkul add nahi hogi)
+            // 1. AGAR PHOTOS HAIN TO SIRF PHOTOS (JPG) AAYENGI
             // ============================================================
             if (data.images && Array.isArray(data.images) && data.images.length > 0) {
                 const formats = data.images.map((imgUrl, idx) => {
@@ -46,27 +45,27 @@ router.post('/download', async (req, res) => {
                     title: `TikTok_Photo_${Date.now()}`,
                     thumbnail: formats[0].downloadUrl,
                     downloadUrl: formats[0].downloadUrl,
-                    formats: formats // Sirf photos aayengi!
+                    formats: formats
                 });
             }
 
             // ============================================================
-            // CASE 2: SIRF AGAR ASAL VIDEO POST HO (Koi photos na hon)
+            // 2. SIRF AIK SINGLE REGULAR VIDEO (NO WATERMARK WALI KHATAM)
             // ============================================================
-            let cleanVideo = data.play || data.hdplay;
-            if (cleanVideo) {
-                if (!cleanVideo.startsWith('http')) {
-                    cleanVideo = `https://www.tikwm.com${cleanVideo}`;
+            let standardVideo = data.wmplay || data.play;
+            if (standardVideo) {
+                if (!standardVideo.startsWith('http')) {
+                    standardVideo = `https://www.tikwm.com${standardVideo}`;
                 }
 
                 return res.json({
                     success: true,
                     title: `TikTok_Video_${Date.now()}`,
-                    thumbnail: data.cover || cleanVideo,
-                    downloadUrl: cleanVideo,
+                    thumbnail: data.cover || standardVideo,
+                    downloadUrl: standardVideo,
                     formats: [{
-                        quality: 'HD Video (No Watermark)',
-                        downloadUrl: cleanVideo,
+                        quality: 'Standard Video (MP4)',
+                        downloadUrl: standardVideo,
                         extension: 'mp4',
                         type: 'video'
                     }]
@@ -74,7 +73,7 @@ router.post('/download', async (req, res) => {
             }
         }
 
-        return res.status(400).json({ success: false, error: 'Could not extract media from TikTok.' });
+        return res.status(400).json({ success: false, error: 'Could not extract TikTok media.' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }
