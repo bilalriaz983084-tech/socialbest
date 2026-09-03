@@ -20,43 +20,14 @@ router.post('/download', async (req, res) => {
     let cleanUrl = url.trim().split('?')[0];
 
     // ============================================================
-    // 🌟 METHOD 1: Instant Public Gateway (< 1.5s)
-    // ============================================================
-    try {
-        const directRes = await axios.get(`https://api.vkrdownloader.vercel.app/server?vkr=${encodeURIComponent(cleanUrl)}`, {
-            timeout: 5000
-        });
-
-        if (directRes.data && directRes.data.data) {
-            const data = directRes.data.data;
-            const dlUrl = data.url || data.download_url;
-
-            if (dlUrl) {
-                const isVid = dlUrl.includes('.mp4') || data.type === 'video';
-                return res.json({
-                    success: true,
-                    title: `Instagram_${Date.now()}`,
-                    thumbnail: dlUrl,
-                    downloadUrl: dlUrl,
-                    formats: [{
-                        quality: isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)',
-                        downloadUrl: dlUrl,
-                        extension: isVid ? 'mp4' : 'jpg',
-                        type: isVid ? 'video' : 'photo'
-                    }]
-                });
-            }
-        }
-    } catch (_) {}
-
-    // ============================================================
-    // 🌟 METHOD 2: Apify Fixed Schema Call (Correct Parameters)
+    // 🌟 METHOD 1: Apify Instagram Post Scraper (Exact Input Schema)
     // ============================================================
     if (APIFY_TOKEN) {
         try {
-            // timeoutSecs hata diya hai, waitSecs use kiya hai jo Apify support karta hai
-            const run = await apifyClient.actor("shu8h4m/instagram-downloader").call({
-                url: cleanUrl
+            // Is actor ko direct post URL 'username' array ke andar chahiye hoti hai
+            const run = await apifyClient.actor("apify/instagram-post-scraper").call({
+                username: [cleanUrl],
+                resultsLimit: 1
             }, {
                 waitSecs: 8
             });
@@ -67,31 +38,46 @@ router.post('/download', async (req, res) => {
                 const item = items[0];
                 const formats = [];
 
-                if (item.medias && Array.isArray(item.medias)) {
-                    item.medias.forEach((m, idx) => {
-                        const isVid = m.type === 'video' || (m.url && m.url.includes('.mp4'));
-                        formats.push({
-                            quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
-                            downloadUrl: m.url,
-                            extension: isVid ? 'mp4' : 'jpg',
-                            type: isVid ? 'video' : 'photo'
-                        });
+                // 1. Carousel / Sidecar Posts (Multiple media)
+                if (item.childPosts && item.childPosts.length > 0) {
+                    item.childPosts.forEach((child, idx) => {
+                        const isVid = child.type === 'Video' || !!child.videoUrl;
+                        const dlUrl = isVid ? child.videoUrl : (child.displayUrl || child.images?.[0]);
+
+                        if (dlUrl) {
+                            formats.push({
+                                quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
+                                downloadUrl: dlUrl,
+                                extension: isVid ? 'mp4' : 'jpg',
+                                type: isVid ? 'video' : 'photo'
+                            });
+                        }
                     });
-                } else if (item.url || item.downloadUrl) {
-                    const finalUrl = item.url || item.downloadUrl;
-                    const isVid = item.type === 'video' || finalUrl.includes('.mp4');
+                }
+                // 2. Single Video / Reel
+                else if (item.videoUrl) {
                     formats.push({
-                        quality: isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)',
-                        downloadUrl: finalUrl,
-                        extension: isVid ? 'mp4' : 'jpg',
-                        type: isVid ? 'video' : 'photo'
+                        quality: 'HD Video (MP4)',
+                        downloadUrl: item.videoUrl,
+                        extension: 'mp4',
+                        type: 'video'
+                    });
+                }
+                // 3. Single Photo
+                else if (item.displayUrl || (item.images && item.images.length > 0)) {
+                    const imgUrl = item.displayUrl || item.images[0];
+                    formats.push({
+                        quality: 'HD Photo (JPG)',
+                        downloadUrl: imgUrl,
+                        extension: 'jpg',
+                        type: 'photo'
                     });
                 }
 
                 if (formats.length > 0) {
                     return res.json({
                         success: true,
-                        title: `Instagram_${Date.now()}`,
+                        title: `Instagram_${item.shortCode || Date.now()}`,
                         thumbnail: formats[0].downloadUrl,
                         downloadUrl: formats[0].downloadUrl,
                         formats: formats
@@ -104,21 +90,23 @@ router.post('/download', async (req, res) => {
     }
 
     // ============================================================
-    // 🌟 METHOD 3: InstaMedia Direct Rapid API
+    // 🌟 METHOD 2: FastDL Instant Fallback
     // ============================================================
     try {
-        const rapidRes = await axios.post('https://api.fastdl.app/api/convert', {
+        const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
             url: cleanUrl
         }, {
             headers: {
                 'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Origin': 'https://fastdl.app',
+                'Referer': 'https://fastdl.app/'
             },
             timeout: 5000
         });
 
-        if (rapidRes.data && rapidRes.data.url) {
-            const rawList = Array.isArray(rapidRes.data.url) ? rapidRes.data.url : [rapidRes.data.url];
+        if (fdlRes.data && fdlRes.data.url) {
+            const rawList = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
             const formats = rawList.map((entry, idx) => {
                 const dl = entry.url || entry;
                 const isVid = dl.includes('.mp4') || entry.type === 'video';
