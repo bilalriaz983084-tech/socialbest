@@ -6,17 +6,17 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
-// Helper: Real Unshortener for Facebook Share / Watch / Short Links
+// Helper: Real Unshortener for /share/, fb.watch & Redirects
 async function resolveFacebookUrl(inputUrl) {
     try {
-        const clean = inputUrl.trim();
+        let clean = inputUrl.trim();
         const res = await axios.get(clean, {
             headers: {
                 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
             maxRedirects: 10,
-            timeout: 5000,
+            timeout: 4500,
             validateStatus: (status) => status >= 200 && status < 400
         });
 
@@ -67,89 +67,90 @@ router.post('/download', async (req, res) => {
 
         let videoDownloadUrl = null;
         let thumbnail = null;
-        let images = [];
 
         // ============================================================
-        // 🌟 ENGINE 1: Direct Meta GraphQL / OpenGraph Scraper
+        // 🌟 ENGINE 1: Mobile Basic HTML5 Direct Stream Scraper (< 1.5s)
         // ============================================================
-        let rawHtml = '';
         try {
-            const pageRes = await axios.get(cleanUrl, {
+            const mUrl = cleanUrl.replace('www.facebook.com', 'mbasic.facebook.com')
+                                 .replace('web.facebook.com', 'mbasic.facebook.com');
+
+            const mRes = await axios.get(mUrl, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Sec-Fetch-Mode': 'navigate'
+                    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                 },
-                timeout: 5000
+                timeout: 3500
             });
 
-            rawHtml = pageRes.data;
+            const mHtml = mRes.data;
+            if (typeof mHtml === 'string') {
+                const redirectMatch = mHtml.match(/href="(\/video_redirect\/[^"]+)"/);
+                const directSrcMatch = mHtml.match(/src="([^"]+\.mp4[^"]*)"/);
 
-            const hdMatch = rawHtml.match(/"browser_native_hd_url":"([^"]+)"/) || rawHtml.match(/"playable_url_quality_hd":"([^"]+)"/);
-            const sdMatch = rawHtml.match(/"browser_native_sd_url":"([^"]+)"/) || rawHtml.match(/"playable_url":"([^"]+)"/);
-            const thumbMatch = rawHtml.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
-
-            const chosen = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
-
-            if (chosen) {
-                videoDownloadUrl = cleanDecodedUrl(chosen);
-                if (thumbMatch && thumbMatch[1]) {
-                    thumbnail = cleanDecodedUrl(thumbMatch[1]);
+                if (redirectMatch && redirectMatch[1]) {
+                    const parsed = new URL('https://mbasic.facebook.com' + redirectMatch[1]);
+                    const srcParam = parsed.searchParams.get('src');
+                    if (srcParam) videoDownloadUrl = decodeURIComponent(srcParam);
+                } else if (directSrcMatch && directSrcMatch[1]) {
+                    videoDownloadUrl = directSrcMatch[1].replace(/&amp;/g, '&');
                 }
             }
-        } catch (err) {
-            console.log('[Facebook] Direct Meta parsing failed:', err.message);
+        } catch (mErr) {
+            console.log('[Facebook] Mobile Basic engine skipped:', mErr.message);
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Siputzx Resolver (Video Priority)
+        // 🌟 ENGINE 2: Meta Direct Regex (HD/SD native fallback)
+        // ============================================================
+        if (!videoDownloadUrl) {
+            try {
+                const pageRes = await axios.get(cleanUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                        'Accept-Language': 'en-US,en;q=0.9'
+                    },
+                    timeout: 4000
+                });
+
+                const html = pageRes.data;
+                const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
+                const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
+                const thumbMatch = html.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
+
+                const chosen = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
+                if (chosen) {
+                    videoDownloadUrl = cleanDecodedUrl(chosen);
+                    if (thumbMatch && thumbMatch[1]) {
+                        thumbnail = cleanDecodedUrl(thumbMatch[1]);
+                    }
+                }
+            } catch (dErr) {
+                console.log('[Facebook] Direct Meta engine skipped:', dErr.message);
+            }
+        }
+
+        // ============================================================
+        // 🌟 ENGINE 3: Siputzx Public Cluster API
         // ============================================================
         if (!videoDownloadUrl) {
             try {
                 const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 5000
+                    timeout: 4500
                 });
 
                 if (apiRes.data?.status && apiRes.data?.data) {
                     const data = apiRes.data.data;
-                    if (data.hd || data.sd || data.video) {
-                        videoDownloadUrl = data.hd || data.sd || data.video;
-                        thumbnail = data.thumbnail || thumbnail;
-                    } else if (Array.isArray(data)) {
-                        const vidItem = data.find(item => item.url && item.url.includes('.mp4'));
-                        if (vidItem) {
-                            videoDownloadUrl = vidItem.url;
-                        }
-                    }
+                    videoDownloadUrl = data.hd || data.sd || data.video || (Array.isArray(data) ? data[0]?.url : null);
+                    thumbnail = data.thumbnail || thumbnail;
                 }
-            } catch (err) {
-                console.log('[Facebook] Siputzx failed:', err.message);
+            } catch (sErr) {
+                console.log('[Facebook] Siputzx engine skipped:', sErr.message);
             }
         }
 
         // ============================================================
-        // 🌟 ENGINE 3: Widipe Resolver (Video Priority)
-        // ============================================================
-        if (!videoDownloadUrl) {
-            try {
-                const fbRes = await axios.get(`https://widipe.com/download/fb?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 5000
-                });
-
-                if (fbRes.data?.result) {
-                    const d = fbRes.data.result;
-                    if (d.hd || d.sd || d.video) {
-                        videoDownloadUrl = d.hd || d.sd || d.video;
-                        thumbnail = d.thumbnail || thumbnail;
-                    }
-                }
-            } catch (err) {
-                console.log('[Facebook] Widipe failed:', err.message);
-            }
-        }
-
-        // ============================================================
-        // Video check: Agar video mil gayi to sirf aur sirf MP4 bhejega
+        // Strictly Video Response (Returns only MP4)
         // ============================================================
         if (videoDownloadUrl) {
             return res.json({
@@ -167,45 +168,13 @@ router.post('/download', async (req, res) => {
             });
         }
 
-        // ============================================================
-        // 🌟 Image Extraction: Sirf tab chalegi jab post Video na ho
-        // ============================================================
-        if (rawHtml) {
-            const fullImageMatches = [...rawHtml.matchAll(/"image":{"uri":"([^"]+)"/g)];
-            if (fullImageMatches.length > 0) {
-                fullImageMatches.forEach(m => {
-                    const decoded = cleanDecodedUrl(m[1]);
-                    if (decoded && !images.includes(decoded) && !decoded.includes('/rsrc.php/')) {
-                        images.push(decoded);
-                    }
-                });
-            }
-        }
-
-        if (images.length > 0) {
-            return res.json({
-                success: true,
-                type: 'image',
-                title: `Facebook_Photo_${Date.now()}`,
-                thumbnail: images[0],
-                downloadUrl: images[0],
-                images: images,
-                formats: images.map((imgUrl, index) => ({
-                    quality: `Photo ${index + 1}`,
-                    downloadUrl: imgUrl,
-                    extension: 'jpg',
-                    type: 'image'
-                }))
-            });
-        }
-
         return res.status(400).json({
             success: false,
-            error: 'Facebook video/photo stream could not be extracted. Make sure the post is public.'
+            error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
         });
 
     } catch (err) {
-        console.error('[Facebook] Fatal Error:', err.message);
+        console.error('[Facebook] Fatal Catch Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
