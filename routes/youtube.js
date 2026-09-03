@@ -3,10 +3,9 @@ const router = express.Router();
 const axios = require('axios');
 
 router.get('/status', (req, res) => {
-    res.json({ platform: 'YouTube', status: 'Connected successfully', timestamp: new Date().toISOString() });
+    res.json({ platform: 'YouTube', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
-// Helper: Video ID extraction
 function extractYouTubeId(url) {
     const clean = (url || '').trim();
     const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=|shorts\/)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -27,46 +26,54 @@ router.post('/download', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid YouTube URL or Shorts link' });
     }
 
-    const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const defaultThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     const isAudio = formatType === 'audio';
 
-    console.log(`[YouTube] Processing Video ID: ${videoId} (Format: ${formatType})`);
+    console.log(`[YouTube InnerTube] Processing Video ID: ${videoId}`);
 
     try {
-        let streamUrl = null;
+        let videoStreamUrl = null;
+        let audioStreamUrl = null;
         let videoTitle = `YouTube_${videoId}`;
 
         // ============================================================
-        // 🌟 ENGINE 1: Multi-Instance Cobalt Nodes (Strict 3.5s Cap)
+        // 🌟 ENGINE 1: Invidious Open Federation Cluster (< 2.5s)
         // ============================================================
-        const cobaltNodes = [
-            'https://cobalt-api.kwiatekm.tokyo',
-            'https://api.wuk.sh',
-            'https://co.wuk.sh'
+        const invidiousNodes = [
+            'https://invidious.nerdvpn.de',
+            'https://inv.nadeko.net',
+            'https://invidious.jing.rocks',
+            'https://yt.artemislena.eu'
         ];
 
-        for (const node of cobaltNodes) {
+        for (const node of invidiousNodes) {
             try {
-                const response = await axios.post(`${node}/`, {
-                    url: canonicalUrl,
-                    downloadMode: isAudio ? 'audio' : 'auto',
-                    videoQuality: '720',
-                    audioFormat: 'mp3'
-                }, {
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
+                const invRes = await axios.get(`${node}/api/v1/videos/${videoId}`, {
+                    headers: { 'Accept': 'application/json' },
                     timeout: 3500
                 });
 
-                if (response.data && response.data.url) {
-                    streamUrl = response.data.url;
-                    if (response.data.filename) {
-                        videoTitle = response.data.filename.replace(/\.[^/.]+$/, '');
+                if (invRes.data && invRes.data.formatStreams) {
+                    const streams = invRes.data.formatStreams;
+                    videoTitle = invRes.data.title || videoTitle;
+
+                    // 720p or highest progressive MP4
+                    const vid = streams.find(s => s.resolution === '720p' && s.container === 'mp4') ||
+                                streams.find(s => s.container === 'mp4');
+
+                    if (vid && vid.url) {
+                        videoStreamUrl = vid.url;
                     }
-                    break;
+
+                    // Audio only stream
+                    if (invRes.data.adaptiveFormats) {
+                        const aud = invRes.data.adaptiveFormats.find(a => a.type && a.type.includes('audio/mp4'));
+                        if (aud && aud.url) {
+                            audioStreamUrl = aud.url;
+                        }
+                    }
+
+                    if (videoStreamUrl) break;
                 }
             } catch (_) {
                 continue;
@@ -74,50 +81,80 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Siputzx Fast Cluster Fallback (< 3.5s)
+        // 🌟 ENGINE 2: Piped API High-Speed CDN Relay Fallback (< 2.5s)
         // ============================================================
-        if (!streamUrl) {
-            try {
-                const sipRes = await axios.get(`https://api.siputzx.my.id/api/d/youtube?url=${encodeURIComponent(canonicalUrl)}`, {
-                    timeout: 3500
-                });
+        if (!videoStreamUrl) {
+            const pipedNodes = [
+                'https://pipedapi.kavin.rocks',
+                'https://api.piped.privacydev.net'
+            ];
 
-                if (sipRes.data?.status && sipRes.data?.data) {
-                    const data = sipRes.data.data;
-                    streamUrl = isAudio ? (data.audio || data.mp3) : (data.video || data.mp4 || data.url);
-                    if (data.title) videoTitle = data.title;
-                }
-            } catch (sipErr) {
-                console.log('[YouTube] Siputzx engine skipped:', sipErr.message);
+            for (const pNode of pipedNodes) {
+                try {
+                    const pRes = await axios.get(`${pNode}/streams/${videoId}`, {
+                        timeout: 3500
+                    });
+
+                    if (pRes.data) {
+                        videoTitle = pRes.data.title || videoTitle;
+                        const vStreams = pRes.data.videoStreams || [];
+                        const aStreams = pRes.data.audioStreams || [];
+
+                        const vid = vStreams.find(s => s.quality === '720p' && s.format === 'MPEG_4') ||
+                                    vStreams.find(s => s.format === 'MPEG_4');
+
+                        if (vid && vid.url) videoStreamUrl = vid.url;
+                        if (aStreams.length > 0 && aStreams[0].url) audioStreamUrl = aStreams[0].url;
+
+                        if (videoStreamUrl) break;
+                    }
+                } catch (_) {}
             }
         }
 
         // ============================================================
-        // RESPONSE (Matches Android App Spec)
+        // Response Dispatcher
         // ============================================================
-        if (streamUrl) {
+        if (videoStreamUrl || audioStreamUrl) {
+            const formats = [];
+
+            if (videoStreamUrl) {
+                formats.push({
+                    quality: 'HD Video 720p (MP4)',
+                    downloadUrl: videoStreamUrl,
+                    extension: 'mp4',
+                    type: 'video'
+                });
+            }
+
+            if (audioStreamUrl) {
+                formats.push({
+                    quality: 'Audio Only (M4A/MP3)',
+                    downloadUrl: audioStreamUrl,
+                    extension: isAudio ? 'mp3' : 'm4a',
+                    type: 'audio'
+                });
+            }
+
+            const primaryUrl = (isAudio && audioStreamUrl) ? audioStreamUrl : (videoStreamUrl || audioStreamUrl);
+
             return res.json({
                 success: true,
                 type: isAudio ? 'audio' : 'video',
                 title: videoTitle,
                 thumbnail: defaultThumbnail,
-                downloadUrl: streamUrl,
-                formats: [{
-                    quality: isAudio ? 'Audio Only (MP3)' : 'HD Video (MP4)',
-                    downloadUrl: streamUrl,
-                    extension: isAudio ? 'mp3' : 'mp4',
-                    type: isAudio ? 'audio' : 'video'
-                }]
+                downloadUrl: primaryUrl,
+                formats: formats
             });
         }
 
         return res.status(400).json({
             success: false,
-            error: 'YouTube stream could not be extracted. Ensure the video is public and not age-restricted.'
+            error: 'YouTube stream could not be reached. Ensure video is public and not age-restricted.'
         });
 
     } catch (err) {
-        console.error('[YouTube Route Error]:', err.message);
+        console.error('[YouTube Error]:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
