@@ -20,11 +20,11 @@ router.post('/download', async (req, res) => {
     let cleanUrl = url.trim().split('?')[0];
 
     // ============================================================
-    // 🌟 METHOD 1: Fast Direct Extraction (< 1.5 Seconds, Zero Timeout)
+    // 🌟 METHOD 1: Instant Public Gateway (< 1.5s)
     // ============================================================
     try {
         const directRes = await axios.get(`https://api.vkrdownloader.vercel.app/server?vkr=${encodeURIComponent(cleanUrl)}`, {
-            timeout: 6000
+            timeout: 5000
         });
 
         if (directRes.data && directRes.data.data) {
@@ -50,14 +50,16 @@ router.post('/download', async (req, res) => {
     } catch (_) {}
 
     // ============================================================
-    // 🌟 METHOD 2: Apify Fixed Actor (Single Post / Reel Scraper)
+    // 🌟 METHOD 2: Apify Fixed Schema Call (Correct Parameters)
     // ============================================================
     if (APIFY_TOKEN) {
         try {
-            // Sahi Actor jo direct post URLs leti hai aur username nahi mangti
+            // timeoutSecs hata diya hai, waitSecs use kiya hai jo Apify support karta hai
             const run = await apifyClient.actor("shu8h4m/instagram-downloader").call({
                 url: cleanUrl
-            }, { timeoutSecs: 9 });
+            }, {
+                waitSecs: 8
+            });
 
             const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
 
@@ -65,7 +67,6 @@ router.post('/download', async (req, res) => {
                 const item = items[0];
                 const formats = [];
 
-                // Multi-item / Carousel post
                 if (item.medias && Array.isArray(item.medias)) {
                     item.medias.forEach((m, idx) => {
                         const isVid = m.type === 'video' || (m.url && m.url.includes('.mp4'));
@@ -76,9 +77,7 @@ router.post('/download', async (req, res) => {
                             type: isVid ? 'video' : 'photo'
                         });
                     });
-                } 
-                // Single Video ya Single Photo
-                else if (item.url || item.downloadUrl) {
+                } else if (item.url || item.downloadUrl) {
                     const finalUrl = item.url || item.downloadUrl;
                     const isVid = item.type === 'video' || finalUrl.includes('.mp4');
                     formats.push({
@@ -105,7 +104,7 @@ router.post('/download', async (req, res) => {
     }
 
     // ============================================================
-    // 🌟 METHOD 3: Public Rapid Gateway Fallback
+    // 🌟 METHOD 3: InstaMedia Direct Rapid API
     // ============================================================
     try {
         const rapidRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -115,7 +114,7 @@ router.post('/download', async (req, res) => {
                 'Content-Type': 'application/json',
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
             },
-            timeout: 6000
+            timeout: 5000
         });
 
         if (rapidRes.data && rapidRes.data.url) {
