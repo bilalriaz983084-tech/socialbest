@@ -16,13 +16,14 @@ async function resolveFacebookUrl(inputUrl) {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
             maxRedirects: 10,
-            timeout: 6000,
+            timeout: 5000,
             validateStatus: (status) => status >= 200 && status < 400
         });
 
         const html = typeof res.data === 'string' ? res.data : '';
         const ogMatch = html.match(/property="og:url"\s+content="([^"]+)"/i) || 
                         html.match(/content="([^"]+)"\s+property="og:url"/i);
+
         if (ogMatch && ogMatch[1] && !ogMatch[1].includes('/share/')) {
             return ogMatch[1].split('?')[0];
         }
@@ -35,7 +36,6 @@ async function resolveFacebookUrl(inputUrl) {
 }
 
 router.post('/download', async (req, res) => {
-    // 🌟 Safe payload extraction supporting multiple key names
     const rawUrl = req.body?.url || req.body?.link || req.body?.videoUrl || req.query?.url;
     
     if (!rawUrl || typeof rawUrl !== 'string' || !rawUrl.trim()) {
@@ -70,7 +70,7 @@ router.post('/download', async (req, res) => {
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Sec-Fetch-Mode': 'navigate'
                 },
-                timeout: 5000
+                timeout: 4000
             });
 
             const html = pageRes.data;
@@ -96,7 +96,7 @@ router.post('/download', async (req, res) => {
         if (!videoDownloadUrl) {
             try {
                 const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 6000
+                    timeout: 5000
                 });
 
                 if (apiRes.data?.status && apiRes.data?.data) {
@@ -115,7 +115,7 @@ router.post('/download', async (req, res) => {
         if (!videoDownloadUrl) {
             try {
                 const fbRes = await axios.get(`https://widipe.com/download/fb?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 6000
+                    timeout: 5000
                 });
 
                 if (fbRes.data?.result) {
@@ -129,7 +129,7 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // RESPONSE
+        // STRICT VIDEO RESPONSE (Only MP4)
         // ============================================================
         if (videoDownloadUrl) {
             return res.json({
@@ -151,7 +151,7 @@ router.post('/download', async (req, res) => {
             error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
         });
 
-    } express (err) {
+    } catch (err) {
         console.error('[Facebook] Fatal Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
