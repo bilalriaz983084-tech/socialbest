@@ -25,54 +25,56 @@ router.post('/download', async (req, res) => {
 
         if (response.data && response.data.data) {
             const data = response.data.data;
-            const formats = [];
 
-            // 1. Agar MULTIPLE IMAGES / PHOTOS hain (Saari images nikalna)
+            // ============================================================
+            // 1. CHECK FOR PHOTOS FIRST (SLIDESHOW / MULTI-PIC / SINGLE PIC)
+            // Agar post mein images hain, to VIDEO KO REJECT KARO
+            // ============================================================
             if (data.images && Array.isArray(data.images) && data.images.length > 0) {
-                data.images.forEach((imgUrl, idx) => {
-                    const fullImg = imgUrl.startsWith('http') ? imgUrl : `https://www.tikwm.com${imgUrl}`;
-                    formats.push({
-                        quality: `Photo ${idx + 1} (HD)`,
-                        downloadUrl: fullImg,
+                const formats = data.images.map((imgUrl, idx) => {
+                    const cleanImg = imgUrl.startsWith('http') ? imgUrl : `https://www.tikwm.com${imgUrl}`;
+                    return {
+                        quality: data.images.length === 1 ? 'HD Photo (JPG)' : `Photo ${idx + 1} (HD)`,
+                        downloadUrl: cleanImg,
                         extension: 'jpg',
                         type: 'photo'
-                    });
+                    };
                 });
 
                 return res.json({
                     success: true,
-                    title: data.title ? `TikTok_${data.title.substring(0, 20)}` : `TikTok_Photos_${Date.now()}`,
+                    title: `TikTok_Photo_${Date.now()}`,
                     thumbnail: formats[0].downloadUrl,
                     downloadUrl: formats[0].downloadUrl,
                     formats: formats
                 });
             }
 
-            // 2. Agar VIDEO hai (Strictly 1 No-Watermark HD video)
+            // ============================================================
+            // 2. AGAR SIRF VIDEO POST HAI (STRICTLY 1 CLEAN VIDEO, NO DUPLICATE)
+            // ============================================================
             let cleanVideo = data.play || data.hdplay;
             if (cleanVideo) {
                 if (!cleanVideo.startsWith('http')) {
                     cleanVideo = `https://www.tikwm.com${cleanVideo}`;
                 }
 
-                formats.push({
-                    quality: 'HD Video (No Watermark)',
-                    downloadUrl: cleanVideo,
-                    extension: 'mp4',
-                    type: 'video'
-                });
-
                 return res.json({
                     success: true,
-                    title: data.title ? `TikTok_${data.title.substring(0, 20)}` : `TikTok_Video_${Date.now()}`,
+                    title: `TikTok_Video_${Date.now()}`,
                     thumbnail: data.cover || cleanVideo,
                     downloadUrl: cleanVideo,
-                    formats: formats
+                    formats: [{
+                        quality: 'HD Video (No Watermark)',
+                        downloadUrl: cleanVideo,
+                        extension: 'mp4',
+                        type: 'video'
+                    }]
                 });
             }
         }
 
-        return res.status(400).json({ success: false, error: 'Could not extract media from TikTok.' });
+        return res.status(400).json({ success: false, error: 'Could not extract TikTok media.' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }
