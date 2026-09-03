@@ -69,7 +69,7 @@ router.post('/download', async (req, res) => {
 
                 results.forEach((entry, idx) => {
                     const dl = entry.url || entry;
-                    if (dl) {
+                    if (dl && typeof dl === 'string') {
                         const isHd = entry.name?.toLowerCase().includes('hd') || dl.includes('_hd');
                         formats.push({
                             quality: isHd ? 'HD Quality (MP4)' : `SD Quality (MP4) ${idx > 0 ? idx + 1 : ''}`.trim(),
@@ -93,59 +93,21 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 2: SnapSave Public Form Resolver (< 3s)
-        // ============================================================
-        try {
-            const snapRes = await axios.post('https://snapsave.app/action.php',
-                new URLSearchParams({ url: targetUrl }).toString(),
-                {
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36'
-                    },
-                    timeout: 4500
-                }
-            );
-
-            const html = snapRes.data;
-            if (typeof html === 'string') {
-                const hdMatch = html.match(/href="([^"]+)"[^>]*>Render/i) || 
-                                html.match(/href="([^"]+)"[^>]*>Download<\/a>/i) ||
-                                html.match(/href="([^"]+)" class="button is-success/i);
-
-                if (hdMatch && hdMatch[1]) {
-                    const dlUrl = hdMatch[1].replace(/&amp;/g, '&');
-                    return res.json({
-                        success: true,
-                        title: `Facebook_${Date.now()}`,
-                        thumbnail: dlUrl,
-                        downloadUrl: dlUrl,
-                        formats: [{
-                            quality: 'HD Video (MP4)',
-                            downloadUrl: dlUrl,
-                            extension: 'mp4',
-                            type: 'video'
-                        }]
-                    });
-                }
-            }
-        } catch (_) {}
-
-        // ============================================================
-        // 🌟 METHOD 3: Verified Apify Actor (ID: 3fjTw1dfOOEYaG4eI)
+        // 🌟 METHOD 2: Verified Apify Actor (ID: 3fjTw1dfOOEYaG4eI)
         // ============================================================
         if (APIFY_TOKEN) {
             try {
                 const input = {
-                    urls: [targetUrl], // Direct string array
+                    urls: [targetUrl],
                     includeCommentText: false,
                     proxy: {
                         useApifyProxy: true
                     }
                 };
 
+                // Wait secs 8 rakha hai taake container build pull hone ka time mile
                 const run = await apifyClient.actor("3fjTw1dfOOEYaG4eI").call(input, {
-                    waitSecs: 7
+                    waitSecs: 8
                 });
 
                 const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
@@ -154,13 +116,16 @@ router.post('/download', async (req, res) => {
                     const post = items[0];
                     const formats = [];
 
-                    // 1. Direct Video
+                    // Exhaustive search across all possible video attributes in actor output
                     const videoUrl = post.videoUrl || 
                                      post.media?.[0]?.videoUrl || 
+                                     post.media?.[0]?.url ||
                                      post.attachments?.[0]?.url || 
-                                     post.attachments?.[0]?.playable_url;
+                                     post.attachments?.[0]?.playable_url ||
+                                     post.playable_url_quality_hd ||
+                                     post.playable_url;
 
-                    if (videoUrl) {
+                    if (videoUrl && typeof videoUrl === 'string') {
                         formats.push({
                             quality: 'HD Video (MP4)',
                             downloadUrl: videoUrl,
@@ -169,15 +134,17 @@ router.post('/download', async (req, res) => {
                         });
                     }
 
-                    // 2. Photos/Images fallback
-                    if (formats.length === 0 && (post.imageUrl || post.media?.[0]?.url || post.images?.length > 0)) {
-                        const imgUrl = post.imageUrl || post.media?.[0]?.url || post.images[0];
-                        formats.push({
-                            quality: 'HD Photo (JPG)',
-                            downloadUrl: imgUrl,
-                            extension: 'jpg',
-                            type: 'photo'
-                        });
+                    // Fallback to Photo if post is an image
+                    if (formats.length === 0) {
+                        const imgUrl = post.imageUrl || post.media?.[0]?.url || post.images?.[0];
+                        if (imgUrl) {
+                            formats.push({
+                                quality: 'HD Photo (JPG)',
+                                downloadUrl: imgUrl,
+                                extension: 'jpg',
+                                type: 'photo'
+                            });
+                        }
                     }
 
                     if (formats.length > 0) {
