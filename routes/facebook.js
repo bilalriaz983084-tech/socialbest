@@ -13,7 +13,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Short links expand karein aur tracking query parameters remove karein
+// Helper: Redirects resolve karein aur tracking parameters clean karein
 async function cleanAndExpandFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
@@ -132,24 +132,19 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 3: Verified Apify Actor (ID: AtBpiepuIUNs2k2ku)
+        // 🌟 METHOD 3: Verified Apify Actor (ID: 3fjTw1dfOOEYaG4eI)
         // ============================================================
         if (APIFY_TOKEN) {
             try {
                 const input = {
-                    "startUrls": [{ "url": targetUrl }],
-                    "scrapePhotos": false,
-                    "sortType": "new_posts",
-                    "cursors": [],
-                    "outputFormat": "raw",
-                    "minDelay": 1,
-                    "maxDelay": 5,
-                    "proxy": {
-                        "useApifyProxy": true
+                    urls: [targetUrl], // Direct string array
+                    includeCommentText: false,
+                    proxy: {
+                        useApifyProxy: true
                     }
                 };
 
-                const run = await apifyClient.actor("AtBpiepuIUNs2k2ku").call(input, {
+                const run = await apifyClient.actor("3fjTw1dfOOEYaG4eI").call(input, {
                     waitSecs: 7
                 });
 
@@ -157,23 +152,41 @@ router.post('/download', async (req, res) => {
 
                 if (items && items.length > 0) {
                     const post = items[0];
+                    const formats = [];
+
+                    // 1. Direct Video
                     const videoUrl = post.videoUrl || 
                                      post.media?.[0]?.videoUrl || 
                                      post.attachments?.[0]?.url || 
                                      post.attachments?.[0]?.playable_url;
 
                     if (videoUrl) {
+                        formats.push({
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: videoUrl,
+                            extension: 'mp4',
+                            type: 'video'
+                        });
+                    }
+
+                    // 2. Photos/Images fallback
+                    if (formats.length === 0 && (post.imageUrl || post.media?.[0]?.url || post.images?.length > 0)) {
+                        const imgUrl = post.imageUrl || post.media?.[0]?.url || post.images[0];
+                        formats.push({
+                            quality: 'HD Photo (JPG)',
+                            downloadUrl: imgUrl,
+                            extension: 'jpg',
+                            type: 'photo'
+                        });
+                    }
+
+                    if (formats.length > 0) {
                         return res.json({
                             success: true,
-                            title: `Facebook_${Date.now()}`,
-                            thumbnail: videoUrl,
-                            downloadUrl: videoUrl,
-                            formats: [{
-                                quality: 'HD Video (MP4)',
-                                downloadUrl: videoUrl,
-                                extension: 'mp4',
-                                type: 'video'
-                            }]
+                            title: `Facebook_${post.id || Date.now()}`,
+                            thumbnail: formats[0].downloadUrl,
+                            downloadUrl: formats[0].downloadUrl,
+                            formats: formats
                         });
                     }
                 }
@@ -184,7 +197,7 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook video could not be parsed. Verify the video is public.'
+            error: 'Facebook video could not be parsed. Verify the post/reel is public.'
         });
 
     } catch (err) {
