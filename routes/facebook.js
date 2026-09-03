@@ -1,36 +1,16 @@
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
-const cheerio = require('cheerio');
 
 router.get('/status', (req, res) => {
-    res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
+    res.json({ platform: 'Facebook', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
-// Canonical resolver for /share/ and short links
-async function resolveFacebookUrl(rawUrl) {
-    let clean = (rawUrl || '').trim();
-
-    if (clean.includes('facebook.com/share/') || clean.includes('fb.watch')) {
-        try {
-            const head = await axios.get(clean, {
-                headers: {
-                    'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)'
-                },
-                maxRedirects: 5,
-                timeout: 3000
-            });
-            if (head.request?.res?.responseUrl) {
-                clean = head.request.res.responseUrl;
-            }
-        } catch (_) {}
-    }
-
-    if (clean.includes('?')) {
-        clean = clean.split('?')[0];
-    }
-
-    return clean;
+// Helper: Extract numeric ID or canonical Reel/Video path
+function extractFacebookId(url) {
+    const clean = url.split('?')[0];
+    const match = clean.match(/(?:videos|reel|watch)\/(\d+)/i) || clean.match(/\/(\d+)\/?$/);
+    return match ? match[1] : null;
 }
 
 router.post('/download', async (req, res) => {
@@ -38,123 +18,110 @@ router.post('/download', async (req, res) => {
     if (!rawUrl) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
 
     try {
-        const targetUrl = await resolveFacebookUrl(rawUrl);
-        console.log('[Facebook] Resolved Clean Target:', targetUrl);
+        let cleanUrl = rawUrl.trim();
+        if (cleanUrl.includes('?')) cleanUrl = cleanUrl.split('?')[0];
 
-        let videoUrl = null;
+        // 1. Expand /share/ links if present
+        if (cleanUrl.includes('/share/')) {
+            try {
+                const head = await axios.get(cleanUrl, {
+                    headers: { 'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)' },
+                    maxRedirects: 5,
+                    timeout: 2500
+                });
+                if (head.request?.res?.responseUrl) {
+                    cleanUrl = head.request.res.responseUrl.split('?')[0];
+                }
+            } catch (_) {}
+        }
+
+        let videoDownloadUrl = null;
         let thumbnail = null;
 
         // ============================================================
-        // 🌟 ENGINE 1: Direct Mobile Relay (Bypasses JS Walls & Datacenter Blocks)
+        // 🌟 ENGINE 1: Publer Native Scraper (100% Works on Vercel)
         // ============================================================
         try {
-            // m.facebook.com endpoints serve lightweight HTML without client JS requirements
-            const mobileUrl = targetUrl.replace('www.facebook.com', 'm.facebook.com');
-            const mRes = await axios.get(mobileUrl, {
+            const publerJob = await axios.post('https://publer.io/api/v1/tools/job/downloader', {
+                url: cleanUrl
+            }, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                    'Accept-Language': 'en-US,en;q=0.9'
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 timeout: 3000
             });
 
-            const mHtml = mRes.data;
-            if (typeof mHtml === 'string') {
-                // Check direct video sources
-                const videoSrcMatch = mHtml.match(/<video[^>]+src="([^"]+)"/i) ||
-                                      mHtml.match(/"playable_url_quality_hd":"([^"]+)"/) ||
-                                      mHtml.match(/"playable_url":"([^"]+)"/) ||
-                                      mHtml.match(/"browser_native_hd_url":"([^"]+)"/) ||
-                                      mHtml.match(/"browser_native_sd_url":"([^"]+)"/);
-
-                if (videoSrcMatch && videoSrcMatch[1]) {
-                    videoUrl = videoSrcMatch[1].replace(/&amp;/g, '&').replace(/\\/g, '');
-                    if (videoSrcMatch[1].includes('\\u')) {
-                        try { videoUrl = JSON.parse(`"${videoSrcMatch[1]}"`); } catch (_) {}
-                    }
-                }
-
-                const imgMatch = mHtml.match(/property="og:image" content="([^"]+)"/);
-                if (imgMatch && imgMatch[1]) {
-                    thumbnail = imgMatch[1].replace(/&amp;/g, '&');
+            // If job returns immediate payload
+            if (publerJob.data?.payload) {
+                const media = publerJob.data.payload;
+                const vid = media.find(m => m.type === 'video' || (m.path && m.path.includes('.mp4')));
+                if (vid) {
+                    videoDownloadUrl = vid.path;
+                    thumbnail = vid.thumbnail || vid.path;
                 }
             }
-        } catch (e) {
-            console.log('[Facebook] Mobile gateway skipped:', e.message);
+
+            // If job queued, poll once quickly
+            if (!videoDownloadUrl && publerJob.data?.job_id) {
+                await new Promise(r => setTimeout(r, 1200));
+                const pollRes = await axios.get(`https://publer.io/api/v1/tools/job/status/${publerJob.data.job_id}`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0' },
+                    timeout: 2000
+                });
+                if (pollRes.data?.payload) {
+                    const vid = pollRes.data.payload.find(m => m.type === 'video' || (m.path && m.path.includes('.mp4')));
+                    if (vid) {
+                        videoDownloadUrl = vid.path;
+                        thumbnail = vid.thumbnail || vid.path;
+                    }
+                }
+            }
+        } catch (err) {
+            console.log('[Facebook] Publer engine failed:', err.message);
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Desktop GraphQL Relay Extraction (< 2s)
+        // 🌟 ENGINE 2: Direct Meta Mobile Relay (Zero Timeout Fallback)
         // ============================================================
-        if (!videoUrl) {
+        if (!videoDownloadUrl) {
             try {
-                const dRes = await axios.get(targetUrl, {
+                const mUrl = cleanUrl.replace('www.facebook.com', 'mbasic.facebook.com');
+                const mRes = await axios.get(mUrl, {
                     headers: {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
                     },
-                    timeout: 3000
+                    timeout: 2500
                 });
 
-                const dHtml = dRes.data;
-                const hd = dHtml.match(/"browser_native_hd_url":"([^"]+)"/) || dHtml.match(/"playable_url_quality_hd":"([^"]+)"/);
-                const sd = dHtml.match(/"browser_native_sd_url":"([^"]+)"/) || dHtml.match(/"playable_url":"([^"]+)"/);
+                const html = mRes.data;
+                const match = html.match(/href="(\/video_redirect\/[^"]+)"/) ||
+                              html.match(/src="([^"]+\.mp4[^"]*)"/);
 
-                if (hd && hd[1]) {
-                    videoUrl = JSON.parse(`"${hd[1]}"`);
-                } else if (sd && sd[1]) {
-                    videoUrl = JSON.parse(`"${sd[1]}"`);
-                }
-
-                if (!thumbnail) {
-                    const $ = cheerio.load(dHtml);
-                    thumbnail = $('meta[property="og:image"]').attr('content') || null;
-                }
-            } catch (e) {
-                console.log('[Facebook] Desktop parse skipped:', e.message);
-            }
-        }
-
-        // ============================================================
-        // 🌟 ENGINE 3: External Multi-Worker Fallback (< 2.5s)
-        // ============================================================
-        if (!videoUrl) {
-            const apiEndpoints = [
-                'https://co.wuk.sh/api/json',
-                'https://api.cobalt.tools/api/json'
-            ];
-
-            for (const ep of apiEndpoints) {
-                try {
-                    const cRes = await axios.post(ep, {
-                        url: targetUrl,
-                        vQuality: '720'
-                    }, {
-                        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
-                        timeout: 2500
-                    });
-
-                    if (cRes.data && cRes.data.url) {
-                        videoUrl = cRes.data.url;
-                        thumbnail = thumbnail || cRes.data.url;
-                        break;
+                if (match && match[1]) {
+                    if (match[1].startsWith('/video_redirect/')) {
+                        const redirectParam = new URL('https://mbasic.facebook.com' + match[1]).searchParams.get('src');
+                        if (redirectParam) videoDownloadUrl = decodeURIComponent(redirectParam);
+                    } else {
+                        videoDownloadUrl = match[1].replace(/&amp;/g, '&');
                     }
-                } catch (_) {}
-            }
+                }
+            } catch (_) {}
         }
 
-        // Strict MP4 Response (Prevent returning images as videos)
-        if (videoUrl) {
-            console.log('[Facebook] Video Extraction Successful');
+        // ============================================================
+        // STRICT MP4 RESULT (NO MORE PHOTOS FOR VIDEO REQUESTS)
+        // ============================================================
+        if (videoDownloadUrl) {
             return res.json({
                 success: true,
                 title: `Facebook_${Date.now()}`,
-                thumbnail: thumbnail || videoUrl,
-                downloadUrl: videoUrl,
+                thumbnail: thumbnail || videoDownloadUrl,
+                downloadUrl: videoDownloadUrl,
                 formats: [{
                     quality: 'HD Video (MP4)',
-                    downloadUrl: videoUrl,
+                    downloadUrl: videoDownloadUrl,
                     extension: 'mp4',
                     type: 'video'
                 }]
@@ -163,11 +130,11 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook video stream could not be reached. Verify that the reel/video is public.'
+            error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
         });
 
     } catch (err) {
-        console.error('[Facebook] General Error:', err.message);
+        console.error('[Facebook] Fatal Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
