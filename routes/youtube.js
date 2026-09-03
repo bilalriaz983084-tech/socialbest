@@ -6,6 +6,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'YouTube', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
+// Helper: Extract Clean YouTube Video ID
 function extractYouTubeId(url) {
     const clean = (url || '').trim();
     const regExp = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=|shorts\/)|youtu\.be\/)([^"&?\/\s]{11})/;
@@ -26,135 +27,105 @@ router.post('/download', async (req, res) => {
         return res.status(400).json({ success: false, error: 'Invalid YouTube URL or Shorts link' });
     }
 
+    const canonicalUrl = `https://www.youtube.com/watch?v=${videoId}`;
     const defaultThumbnail = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
     const isAudio = formatType === 'audio';
 
-    console.log(`[YouTube InnerTube] Processing Video ID: ${videoId}`);
+    console.log(`[YouTube] Processing Video ID: ${videoId} (Format: ${formatType})`);
 
     try {
-        let videoStreamUrl = null;
-        let audioStreamUrl = null;
+        let streamUrl = null;
         let videoTitle = `YouTube_${videoId}`;
 
         // ============================================================
-        // 🌟 ENGINE 1: Invidious Open Federation Cluster (< 2.5s)
+        // 🌟 ENGINE 1: Siputzx Real Direct Endpoints (ytmp4 & ytmp3)
         // ============================================================
-        const invidiousNodes = [
-            'https://invidious.nerdvpn.de',
-            'https://inv.nadeko.net',
-            'https://invidious.jing.rocks',
-            'https://yt.artemislena.eu'
-        ];
+        try {
+            const sipEndpoint = isAudio 
+                ? `https://api.siputzx.my.id/api/d/ytmp3?url=${encodeURIComponent(canonicalUrl)}`
+                : `https://api.siputzx.my.id/api/d/ytmp4?url=${encodeURIComponent(canonicalUrl)}`;
 
-        for (const node of invidiousNodes) {
-            try {
-                const invRes = await axios.get(`${node}/api/v1/videos/${videoId}`, {
-                    headers: { 'Accept': 'application/json' },
-                    timeout: 3500
-                });
+            const sipRes = await axios.get(sipEndpoint, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                },
+                timeout: 5000
+            });
 
-                if (invRes.data && invRes.data.formatStreams) {
-                    const streams = invRes.data.formatStreams;
-                    videoTitle = invRes.data.title || videoTitle;
-
-                    // 720p or highest progressive MP4
-                    const vid = streams.find(s => s.resolution === '720p' && s.container === 'mp4') ||
-                                streams.find(s => s.container === 'mp4');
-
-                    if (vid && vid.url) {
-                        videoStreamUrl = vid.url;
-                    }
-
-                    // Audio only stream
-                    if (invRes.data.adaptiveFormats) {
-                        const aud = invRes.data.adaptiveFormats.find(a => a.type && a.type.includes('audio/mp4'));
-                        if (aud && aud.url) {
-                            audioStreamUrl = aud.url;
-                        }
-                    }
-
-                    if (videoStreamUrl) break;
-                }
-            } catch (_) {
-                continue;
+            if (sipRes.data?.status && sipRes.data?.data) {
+                const d = sipRes.data.data;
+                streamUrl = d.dl || d.url || d.download || d.link;
+                videoTitle = d.title || videoTitle;
             }
+        } catch (sipErr) {
+            console.log('[YouTube] Siputzx engine failed:', sipErr.message);
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Piped API High-Speed CDN Relay Fallback (< 2.5s)
+        // 🌟 ENGINE 2: Fast Invidious Open Federation Cluster (< 3s)
         // ============================================================
-        if (!videoStreamUrl) {
-            const pipedNodes = [
-                'https://pipedapi.kavin.rocks',
-                'https://api.piped.privacydev.net'
+        if (!streamUrl) {
+            const invidiousNodes = [
+                'https://inv.nadeko.net',
+                'https://invidious.nerdvpn.de',
+                'https://yt.artemislena.eu'
             ];
 
-            for (const pNode of pipedNodes) {
+            for (const node of invidiousNodes) {
                 try {
-                    const pRes = await axios.get(`${pNode}/streams/${videoId}`, {
-                        timeout: 3500
+                    const invRes = await axios.get(`${node}/api/v1/videos/${videoId}`, {
+                        headers: { 'Accept': 'application/json' },
+                        timeout: 3000
                     });
 
-                    if (pRes.data) {
-                        videoTitle = pRes.data.title || videoTitle;
-                        const vStreams = pRes.data.videoStreams || [];
-                        const aStreams = pRes.data.audioStreams || [];
+                    if (invRes.data) {
+                        videoTitle = invRes.data.title || videoTitle;
 
-                        const vid = vStreams.find(s => s.quality === '720p' && s.format === 'MPEG_4') ||
-                                    vStreams.find(s => s.format === 'MPEG_4');
+                        if (isAudio && invRes.data.adaptiveFormats) {
+                            const aud = invRes.data.adaptiveFormats.find(a => a.type && a.type.includes('audio/mp4'));
+                            if (aud?.url) streamUrl = aud.url;
+                        }
 
-                        if (vid && vid.url) videoStreamUrl = vid.url;
-                        if (aStreams.length > 0 && aStreams[0].url) audioStreamUrl = aStreams[0].url;
+                        if (!isAudio && invRes.data.formatStreams) {
+                            const vid = invRes.data.formatStreams.find(s => s.resolution === '720p' && s.container === 'mp4') ||
+                                        invRes.data.formatStreams.find(s => s.container === 'mp4');
+                            if (vid?.url) streamUrl = vid.url;
+                        }
 
-                        if (videoStreamUrl) break;
+                        if (streamUrl) break;
                     }
-                } catch (_) {}
+                } catch (_) {
+                    continue;
+                }
             }
         }
 
         // ============================================================
-        // Response Dispatcher
+        // RESPONSE (Valid Streams)
         // ============================================================
-        if (videoStreamUrl || audioStreamUrl) {
-            const formats = [];
-
-            if (videoStreamUrl) {
-                formats.push({
-                    quality: 'HD Video 720p (MP4)',
-                    downloadUrl: videoStreamUrl,
-                    extension: 'mp4',
-                    type: 'video'
-                });
-            }
-
-            if (audioStreamUrl) {
-                formats.push({
-                    quality: 'Audio Only (M4A/MP3)',
-                    downloadUrl: audioStreamUrl,
-                    extension: isAudio ? 'mp3' : 'm4a',
-                    type: 'audio'
-                });
-            }
-
-            const primaryUrl = (isAudio && audioStreamUrl) ? audioStreamUrl : (videoStreamUrl || audioStreamUrl);
-
+        if (streamUrl) {
             return res.json({
                 success: true,
                 type: isAudio ? 'audio' : 'video',
                 title: videoTitle,
                 thumbnail: defaultThumbnail,
-                downloadUrl: primaryUrl,
-                formats: formats
+                downloadUrl: streamUrl,
+                formats: [{
+                    quality: isAudio ? 'Audio Only (MP3)' : 'HD Video 720p (MP4)',
+                    downloadUrl: streamUrl,
+                    extension: isAudio ? 'mp3' : 'mp4',
+                    type: isAudio ? 'audio' : 'video'
+                }]
             });
         }
 
         return res.status(400).json({
             success: false,
-            error: 'YouTube stream could not be reached. Ensure video is public and not age-restricted.'
+            error: 'YouTube stream could not be reached. Ensure video is public and accessible.'
         });
 
     } catch (err) {
-        console.error('[YouTube Error]:', err.message);
+        console.error('[YouTube Fatal Error]:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
