@@ -6,8 +6,8 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Clean tracking queries & follow short redirects
-async function getCleanFacebookUrl(rawUrl) {
+// Helper: Redirects resolve karein aur tracking parameters strip karein
+async function cleanAndResolveFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
     if (clean.includes('facebook.com') && clean.includes('?')) {
@@ -38,10 +38,10 @@ router.post('/download', async (req, res) => {
     if (!url) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
 
     try {
-        const targetUrl = await getCleanFacebookUrl(url);
+        const targetUrl = await cleanAndResolveFacebookUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: Cobalt Direct Stream (Sub-2s, 1080p/HD)
+        // 🌟 GATEWAY 1: Cobalt Direct Stream Instances (< 1.8s)
         // ============================================================
         const cobaltMirrors = [
             'https://cobalt-api.kwiatekm.tokyo',
@@ -82,44 +82,37 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 METHOD 2: Direct Meta CDN HTML Decryption (< 2s)
+        // 🌟 GATEWAY 2: SnapSave Public Form Resolver (< 2s)
         // ============================================================
         try {
-            const fbPage = await axios.get(targetUrl, {
-                headers: {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Sec-Fetch-Site': 'none'
-                },
-                timeout: 3500
-            });
+            const snapRes = await axios.post('https://snapsave.app/action.php', 
+                new URLSearchParams({ url: targetUrl }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Referer': 'https://snapsave.app/'
+                    },
+                    timeout: 3500
+                }
+            );
 
-            const html = fbPage.data;
+            const html = snapRes.data;
             if (typeof html === 'string') {
-                const hdMatch = html.match(/browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
-                const sdMatch = html.match(/browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
-
+                const matches = [...html.matchAll(/href="([^"]+)"[^>]*class="button is-success[^"]*"[^>]*>([^<]+)/gi)];
                 const formats = [];
 
-                if (hdMatch && hdMatch[1]) {
-                    const cleanHd = JSON.parse(`"${hdMatch[1]}"`);
-                    formats.push({
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: cleanHd,
-                        extension: 'mp4',
-                        type: 'video'
-                    });
-                }
-
-                if (sdMatch && sdMatch[1]) {
-                    const cleanSd = JSON.parse(`"${sdMatch[1]}"`);
-                    formats.push({
-                        quality: 'SD Video (MP4)',
-                        downloadUrl: cleanSd,
-                        extension: 'mp4',
-                        type: 'video'
-                    });
-                }
+                matches.forEach((m, idx) => {
+                    const dlLink = m[1].replace(/&amp;/g, '&');
+                    if (dlLink.startsWith('http')) {
+                        formats.push({
+                            quality: idx === 0 ? 'HD Video (MP4)' : 'SD Video (MP4)',
+                            downloadUrl: dlLink,
+                            extension: 'mp4',
+                            type: 'video'
+                        });
+                    }
+                });
 
                 if (formats.length > 0) {
                     return res.json({
@@ -134,32 +127,32 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 3: SnapSave Engine Resolver (< 2.5s)
+        // 🌟 GATEWAY 3: FDownloader Media Ajax Resolver (< 2.5s)
         // ============================================================
         try {
-            const snapRes = await axios.post('https://snapsave.app/action.php', 
-                new URLSearchParams({ url: targetUrl }).toString(),
+            const fdRes = await axios.post('https://fdownloader.net/api/ajaxSearch', 
+                new URLSearchParams({ k_exp: '', k_token: '', q: targetUrl }).toString(),
                 {
                     headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Referer': 'https://snapsave.app/'
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                     },
                     timeout: 3500
                 }
             );
 
-            const sHtml = snapRes.data;
-            if (typeof sHtml === 'string') {
-                const matches = [...sHtml.matchAll(/href="([^"]+)"[^>]*class="button is-success[^"]*"[^>]*>([^<]+)/gi)];
+            if (fdRes.data && fdRes.data.data) {
+                const rawHtml = fdRes.data.data;
+                const links = [...rawHtml.matchAll(/href="([^"]+)"[^>]*class="download-link[^"]*"[^>]*data-quality="([^"]*)"/gi)];
                 const formats = [];
 
-                matches.forEach((m, idx) => {
-                    const dlLink = m[1].replace(/&amp;/g, '&');
-                    if (dlLink.startsWith('http')) {
+                links.forEach(l => {
+                    const dl = l[1].replace(/&amp;/g, '&');
+                    const q = l[2] || 'HD';
+                    if (dl.startsWith('http')) {
                         formats.push({
-                            quality: idx === 0 ? 'HD Video (MP4)' : 'SD Video (MP4)',
-                            downloadUrl: dlLink,
+                            quality: `${q} Quality (MP4)`,
+                            downloadUrl: dl,
                             extension: 'mp4',
                             type: 'video'
                         });
