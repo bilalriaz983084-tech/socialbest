@@ -67,10 +67,12 @@ router.post('/download', async (req, res) => {
 
         let videoDownloadUrl = null;
         let thumbnail = null;
+        let images = [];
 
         // ============================================================
-        // 🌟 ENGINE 1: Direct Meta GraphQL / JSON Payload Scraper
+        // 🌟 ENGINE 1: Direct Meta GraphQL / OpenGraph Scraper
         // ============================================================
+        let rawHtml = '';
         try {
             const pageRes = await axios.get(cleanUrl, {
                 headers: {
@@ -78,14 +80,14 @@ router.post('/download', async (req, res) => {
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Sec-Fetch-Mode': 'navigate'
                 },
-                timeout: 4500
+                timeout: 5000
             });
 
-            const html = pageRes.data;
+            rawHtml = pageRes.data;
 
-            const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
-            const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
-            const thumbMatch = html.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
+            const hdMatch = rawHtml.match(/"browser_native_hd_url":"([^"]+)"/) || rawHtml.match(/"playable_url_quality_hd":"([^"]+)"/);
+            const sdMatch = rawHtml.match(/"browser_native_sd_url":"([^"]+)"/) || rawHtml.match(/"playable_url":"([^"]+)"/);
+            const thumbMatch = rawHtml.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
 
             const chosen = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
 
@@ -100,7 +102,7 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Fast API Fallback (Strictly Video)
+        // 🌟 ENGINE 2: Siputzx Resolver (Video Priority)
         // ============================================================
         if (!videoDownloadUrl) {
             try {
@@ -110,19 +112,23 @@ router.post('/download', async (req, res) => {
 
                 if (apiRes.data?.status && apiRes.data?.data) {
                     const data = apiRes.data.data;
-                    const possibleVid = data.hd || data.sd || data.video || (Array.isArray(data) ? data.find(i => i.url?.includes('.mp4'))?.url : null);
-                    if (possibleVid) {
-                        videoDownloadUrl = possibleVid;
+                    if (data.hd || data.sd || data.video) {
+                        videoDownloadUrl = data.hd || data.sd || data.video;
                         thumbnail = data.thumbnail || thumbnail;
+                    } else if (Array.isArray(data)) {
+                        const vidItem = data.find(item => item.url && item.url.includes('.mp4'));
+                        if (vidItem) {
+                            videoDownloadUrl = vidItem.url;
+                        }
                     }
                 }
             } catch (err) {
-                console.log('[Facebook] Siputzx engine failed:', err.message);
+                console.log('[Facebook] Siputzx failed:', err.message);
             }
         }
 
         // ============================================================
-        // 🌟 ENGINE 3: Widipe FB Resolver (Strictly Video)
+        // 🌟 ENGINE 3: Widipe Resolver (Video Priority)
         // ============================================================
         if (!videoDownloadUrl) {
             try {
@@ -138,11 +144,13 @@ router.post('/download', async (req, res) => {
                     }
                 }
             } catch (err) {
-                console.log('[Facebook] Widipe engine failed:', err.message);
+                console.log('[Facebook] Widipe failed:', err.message);
             }
         }
 
-        // Return ONLY Video (Never return photo thumbnails as downloadable images)
+        // ============================================================
+        // Video check: Agar video mil gayi to sirf aur sirf MP4 bhejega
+        // ============================================================
         if (videoDownloadUrl) {
             return res.json({
                 success: true,
@@ -151,7 +159,7 @@ router.post('/download', async (req, res) => {
                 thumbnail: thumbnail || videoDownloadUrl,
                 downloadUrl: videoDownloadUrl,
                 formats: [{
-                    quality: 'HD/SD Video (MP4)',
+                    quality: 'HD Video (MP4)',
                     downloadUrl: videoDownloadUrl,
                     extension: 'mp4',
                     type: 'video'
@@ -159,9 +167,41 @@ router.post('/download', async (req, res) => {
             });
         }
 
+        // ============================================================
+        // 🌟 Image Extraction: Sirf tab chalegi jab post Video na ho
+        // ============================================================
+        if (rawHtml) {
+            const fullImageMatches = [...rawHtml.matchAll(/"image":{"uri":"([^"]+)"/g)];
+            if (fullImageMatches.length > 0) {
+                fullImageMatches.forEach(m => {
+                    const decoded = cleanDecodedUrl(m[1]);
+                    if (decoded && !images.includes(decoded) && !decoded.includes('/rsrc.php/')) {
+                        images.push(decoded);
+                    }
+                });
+            }
+        }
+
+        if (images.length > 0) {
+            return res.json({
+                success: true,
+                type: 'image',
+                title: `Facebook_Photo_${Date.now()}`,
+                thumbnail: images[0],
+                downloadUrl: images[0],
+                images: images,
+                formats: images.map((imgUrl, index) => ({
+                    quality: `Photo ${index + 1}`,
+                    downloadUrl: imgUrl,
+                    extension: 'jpg',
+                    type: 'image'
+                }))
+            });
+        }
+
         return res.status(400).json({
             success: false,
-            error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
+            error: 'Facebook video/photo stream could not be extracted. Make sure the post is public.'
         });
 
     } catch (err) {
