@@ -13,7 +13,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Clean tracking queries & expand share links
+// Helper: Short links expand karein aur clean URL banayein
 async function cleanAndExpandFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
@@ -28,7 +28,7 @@ async function cleanAndExpandFacebookUrl(rawUrl) {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 maxRedirects: 5,
-                timeout: 3000
+                timeout: 3500
             });
             const redirected = headRes.request?.res?.responseUrl;
             if (redirected) {
@@ -48,104 +48,53 @@ router.post('/download', async (req, res) => {
         const targetUrl = await cleanAndExpandFacebookUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: Apify Fast Posts Actor (ID: OkuDbWbIxkgSRhppo)
-        // Direct Priority to stay well within Vercel's 10s budget
+        // 🌟 METHOD 1: Direct SnapSave Form API (< 2s - High Success)
         // ============================================================
-        if (APIFY_TOKEN) {
-            try {
-                const input = {
-                    "direct_urls": [
-                        {
-                            "url": targetUrl
-                        }
-                    ]
-                };
+        try {
+            const snapRes = await axios.post('https://snapsave.app/action.php', 
+                new URLSearchParams({ url: targetUrl }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Referer': 'https://snapsave.app/'
+                    },
+                    timeout: 4000
+                }
+            );
 
-                const run = await apifyClient.actor("OkuDbWbIxkgSRhppo").call(input, {
-                    waitSecs: 7
-                });
+            const html = snapRes.data;
+            if (typeof html === 'string') {
+                const matches = [...html.matchAll(/href="([^"]+)"[^>]*class="button is-success[^"]*"[^>]*>([^<]+)/gi)];
+                const formats = [];
 
-                const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-
-                if (items && items.length > 0) {
-                    const post = items[0];
-                    const formats = [];
-
-                    // Extract Video
-                    let targetVideo = post.video ||
-                                     post.video_url || 
-                                     post.videoUrl || 
-                                     post.playable_url_quality_hd || 
-                                     post.playable_url ||
-                                     post.download_url;
-
-                    if (!targetVideo && post.media && Array.isArray(post.media)) {
-                        for (const m of post.media) {
-                            if (typeof m === 'string' && (m.includes('.mp4') || m.includes('video'))) {
-                                targetVideo = m;
-                                break;
-                            } else if (m && typeof m === 'object' && (m.type === 'video' || m.video_url || m.url)) {
-                                targetVideo = m.video_url || m.url;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (targetVideo && typeof targetVideo === 'string') {
+                matches.forEach((m, idx) => {
+                    const dlLink = m[1].replace(/&amp;/g, '&');
+                    const label = m[2].trim();
+                    if (dlLink.startsWith('http')) {
                         formats.push({
-                            quality: 'HD Video (MP4)',
-                            downloadUrl: targetVideo,
+                            quality: label || (idx === 0 ? 'HD Quality (MP4)' : 'SD Quality (MP4)'),
+                            downloadUrl: dlLink,
                             extension: 'mp4',
                             type: 'video'
                         });
                     }
+                });
 
-                    // Extract Photo / Carousel Photos
-                    if (formats.length === 0) {
-                        let targetImg = post.image || 
-                                        post.image_url || 
-                                        post.imageUrl || 
-                                        post.thumbnail;
-
-                        if (!targetImg && post.media && Array.isArray(post.media)) {
-                            post.media.forEach((m, idx) => {
-                                const imgLink = typeof m === 'string' ? m : (m.url || m.image_url);
-                                if (imgLink && typeof imgLink === 'string') {
-                                    formats.push({
-                                        quality: `Photo ${idx + 1}`,
-                                        downloadUrl: imgLink,
-                                        extension: 'jpg',
-                                        type: 'photo'
-                                    });
-                                }
-                            });
-                        } else if (targetImg && typeof targetImg === 'string') {
-                            formats.push({
-                                quality: 'HD Photo (JPG)',
-                                downloadUrl: targetImg,
-                                extension: 'jpg',
-                                type: 'photo'
-                            });
-                        }
-                    }
-
-                    if (formats.length > 0) {
-                        return res.json({
-                            success: true,
-                            title: `Facebook_${post.id || post.post_id || Date.now()}`,
-                            thumbnail: formats[0].downloadUrl,
-                            downloadUrl: formats[0].downloadUrl,
-                            formats: formats
-                        });
-                    }
+                if (formats.length > 0) {
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: formats[0].downloadUrl,
+                        downloadUrl: formats[0].downloadUrl,
+                        formats: formats
+                    });
                 }
-            } catch (apifyErr) {
-                console.error('Apify Facebook Fast Error:', apifyErr.message);
             }
-        }
+        } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 2: FastDL Gateway (Fallback)
+        // 🌟 METHOD 2: FastDL Gateway (< 2.5s)
         // ============================================================
         try {
             const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -157,7 +106,7 @@ router.post('/download', async (req, res) => {
                     'Origin': 'https://fastdl.app',
                     'Referer': 'https://fastdl.app/'
                 },
-                timeout: 3000
+                timeout: 3500
             });
 
             if (fdlRes.data && fdlRes.data.url) {
@@ -189,9 +138,54 @@ router.post('/download', async (req, res) => {
             }
         } catch (_) {}
 
+        // ============================================================
+        // 🌟 METHOD 3: FDownloader Media Ajax (< 3s)
+        // ============================================================
+        try {
+            const fdRes = await axios.post('https://fdownloader.net/api/ajaxSearch', 
+                new URLSearchParams({ k_exp: '', k_token: '', q: targetUrl }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    },
+                    timeout: 4000
+                }
+            );
+
+            if (fdRes.data && fdRes.data.data) {
+                const rawHtml = fdRes.data.data;
+                const links = [...rawHtml.matchAll(/href="([^"]+)"[^>]*class="download-link[^"]*"[^>]*data-quality="([^"]*)"/gi)];
+                const formats = [];
+
+                links.forEach(l => {
+                    const dl = l[1].replace(/&amp;/g, '&');
+                    const q = l[2] || 'HD';
+                    if (dl.startsWith('http')) {
+                        formats.push({
+                            quality: `${q} Quality (MP4)`,
+                            downloadUrl: dl,
+                            extension: 'mp4',
+                            type: 'video'
+                        });
+                    }
+                });
+
+                if (formats.length > 0) {
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: formats[0].downloadUrl,
+                        downloadUrl: formats[0].downloadUrl,
+                        formats: formats
+                    });
+                }
+            }
+        } catch (_) {}
+
         return res.status(400).json({
             success: false,
-            error: 'Facebook media could not be parsed. Verify the post/reel is public.'
+            error: 'Facebook video could not be parsed. Verify the video/reel is public.'
         });
 
     } catch (err) {
