@@ -6,14 +6,17 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Redirect expand aur clean target URL
-async function getTargetUrl(rawUrl) {
-    let clean = rawUrl.trim();
+// Robust URL normalization & redirect resolver
+async function normalizeFacebookUrl(inputUrl) {
+    if (!inputUrl) return null;
+    let clean = inputUrl.trim();
 
+    // Query parameters clean karein agar standard post ya reel ho
     if (clean.includes('facebook.com') && clean.includes('?')) {
         clean = clean.split('?')[0];
     }
 
+    // fb.watch ya mobile share redirects ko follow karein
     if (clean.includes('fb.watch') || clean.includes('/share/')) {
         try {
             const headRes = await axios.get(clean, {
@@ -21,7 +24,7 @@ async function getTargetUrl(rawUrl) {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 maxRedirects: 5,
-                timeout: 3000
+                timeout: 3500
             });
             const redirected = headRes.request?.res?.responseUrl;
             if (redirected) {
@@ -34,15 +37,17 @@ async function getTargetUrl(rawUrl) {
 }
 
 router.post('/download', async (req, res) => {
-    const { url } = req.body;
-    if (!url) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
+    // 1. Flexible Input Handling (accepts url, link, or videoUrl)
+    const rawUrl = req.body.url || req.body.link || req.body.videoUrl || req.query.url;
+    if (!rawUrl) {
+        return res.status(400).json({ success: false, error: 'Facebook URL is required' });
+    }
 
     try {
-        const targetUrl = await getTargetUrl(url);
+        const targetUrl = await normalizeFacebookUrl(rawUrl);
 
         // ============================================================
-        // 🌟 GATEWAY 1: Direct SnapSave Public Worker (< 2s)
-        // Resolves both Video (MP4) and Photos (JPG)
+        // 🌟 GATEWAY 1: SnapSave Dedicated API (Resolves Videos & Photos)
         // ============================================================
         try {
             const snapRes = await axios.post('https://snapsave.app/action.php', 
@@ -60,7 +65,7 @@ router.post('/download', async (req, res) => {
 
             const rawData = snapRes.data;
             if (typeof rawData === 'string') {
-                // 1. Check for Video Download Links
+                // A. Video Download match
                 const videoMatch = rawData.match(/href="([^"]+)"[^>]*class="button is-success/i) || 
                                    rawData.match(/href="([^"]+)"[^>]*>Download<\/a>/i);
 
@@ -80,7 +85,7 @@ router.post('/download', async (req, res) => {
                     });
                 }
 
-                // 2. Check for Photos / Album Images
+                // B. Photos / Album match
                 const photoMatches = [...rawData.matchAll(/href="([^"]+)"[^>]*class="button is-download/gi)];
                 if (photoMatches.length > 0) {
                     const formats = photoMatches.map((m, idx) => ({
@@ -102,7 +107,7 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 GATEWAY 2: FastDL Dedicated Converter (< 2s)
+        // 🌟 GATEWAY 2: FastDL Gateway (< 2s)
         // ============================================================
         try {
             const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -149,37 +154,45 @@ router.post('/download', async (req, res) => {
         // ============================================================
         // 🌟 GATEWAY 3: Cobalt Stream Relay Fallback (< 2.5s)
         // ============================================================
-        try {
-            const cRes = await axios.post('https://cobalt-api.kwiatekm.tokyo/', {
-                url: targetUrl,
-                videoQuality: '720'
-            }, {
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                timeout: 3500
-            });
+        const cobaltMirrors = [
+            'https://cobalt-api.kwiatekm.tokyo',
+            'https://api.wuk.sh',
+            'https://co.wuk.sh'
+        ];
 
-            if (cRes.data && cRes.data.url) {
-                return res.json({
-                    success: true,
-                    title: `Facebook_${Date.now()}`,
-                    thumbnail: cRes.data.url,
-                    downloadUrl: cRes.data.url,
-                    formats: [{
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: cRes.data.url,
-                        extension: 'mp4',
-                        type: 'video'
-                    }]
+        for (const mirror of cobaltMirrors) {
+            try {
+                const cRes = await axios.post(`${mirror}/`, {
+                    url: targetUrl,
+                    videoQuality: '720'
+                }, {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json'
+                    },
+                    timeout: 3000
                 });
-            }
-        } catch (_) {}
+
+                if (cRes.data && cRes.data.url) {
+                    return res.json({
+                        success: true,
+                        title: `Facebook_${Date.now()}`,
+                        thumbnail: cRes.data.url,
+                        downloadUrl: cRes.data.url,
+                        formats: [{
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: cRes.data.url,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
+                    });
+                }
+            } catch (_) {}
+        }
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook media is private or could not be reached.'
+            error: 'Facebook media could not be resolved. Please ensure the link is public.'
         });
 
     } catch (err) {
