@@ -12,111 +12,109 @@ router.post('/download', async (req, res) => {
 
     try {
         let cleanUrl = url.trim().split('?')[0];
-        const match = cleanUrl.match(/(?:p|reel|tv)\/([A-Za-z0-9_-]+)/);
-        if (!match) return res.status(400).json({ success: false, error: 'Invalid Instagram URL format' });
-        
-        const shortcode = match[1];
 
-        // 🌟 GATEWAY 1: Instagram Mobile Android Internal Endpoint
+        // 🌟 GATEWAY 1: FastDL Engine (Direct Rotating Proxy API)
         try {
-            const mobileRes = await axios.get(`https://www.instagram.com/p/${shortcode}/?__a=1&__d=dis`, {
+            const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
+                url: cleanUrl
+            }, {
                 headers: {
-                    'User-Agent': 'Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36 Instagram 321.0.0.39.108',
-                    'Accept': '*/*',
-                    'Accept-Language': 'en-US,en;q=0.9',
-                    'Sec-Fetch-Mode': 'cors',
-                    'X-IG-App-ID': '936619743392459'
+                    'Content-Type': 'application/json',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+                    'Origin': 'https://fastdl.app',
+                    'Referer': 'https://fastdl.app/'
                 },
-                timeout: 8000
+                timeout: 9000
             });
 
-            const items = mobileRes.data?.items || mobileRes.data?.graphql?.shortcode_media;
-            if (items) {
-                const item = Array.isArray(items) ? items[0] : items;
-                const formats = [];
+            if (fdlRes.data && fdlRes.data.url) {
+                const results = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
+                const formats = results.map((item, idx) => {
+                    const dl = item.url || item;
+                    const isVid = dl.includes('.mp4') || (item.type && item.type === 'video');
+                    return {
+                        quality: results.length > 1 ? `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})` : (isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)'),
+                        downloadUrl: dl,
+                        extension: isVid ? 'mp4' : 'jpg',
+                        type: isVid ? 'video' : 'photo'
+                    };
+                });
 
-                // 1. Check Carousels / Slideshow
-                const carouselMedia = item.carousel_media || item.edge_sidecar_to_children?.edges;
-                if (carouselMedia && carouselMedia.length > 0) {
-                    carouselMedia.forEach((cItem, idx) => {
-                        const node = cItem.node || cItem;
-                        const isVid = node.video_versions?.length > 0 || node.is_video;
-                        const dlUrl = isVid 
-                            ? (node.video_versions ? node.video_versions[0].url : node.video_url)
-                            : (node.image_versions2 ? node.image_versions2.candidates[0].url : node.display_url);
+                return res.json({
+                    success: true,
+                    title: `Instagram_${Date.now()}`,
+                    thumbnail: formats[0].downloadUrl,
+                    downloadUrl: formats[0].downloadUrl,
+                    formats: formats
+                });
+            }
+        } catch (_) {}
 
-                        formats.push({
-                            quality: `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})`,
-                            downloadUrl: dlUrl,
-                            extension: isVid ? 'mp4' : 'jpg',
-                            type: isVid ? 'video' : 'photo'
-                        });
-                    });
+        // 🌟 GATEWAY 2: SnapSave Direct Parser
+        try {
+            const snapRes = await axios.post('https://snapsave.app/action.php', 
+                new URLSearchParams({ url: cleanUrl }).toString(),
+                {
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)'
+                    },
+                    timeout: 9000
                 }
-                // 2. Single Video / Reel
-                else if (item.video_versions?.length > 0 || item.video_url) {
-                    const vidUrl = item.video_versions ? item.video_versions[0].url : item.video_url;
-                    formats.push({
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: vidUrl,
-                        extension: 'mp4',
-                        type: 'video'
-                    });
-                }
-                // 3. Single Photo
-                else if (item.image_versions2?.candidates?.length > 0 || item.display_url) {
-                    const imgUrl = item.image_versions2 ? item.image_versions2.candidates[0].url : item.display_url;
-                    formats.push({
-                        quality: 'HD Photo (JPG)',
-                        downloadUrl: imgUrl,
-                        extension: 'jpg',
-                        type: 'photo'
-                    });
-                }
+            );
 
-                if (formats.length > 0) {
+            if (snapRes.data) {
+                const html = snapRes.data;
+                const match = html.match(/href="([^"]+)" class="button is-success/i) || html.match(/download-box[\s\S]*?href="([^"]+)"/i);
+                if (match && match[1]) {
+                    const finalUrl = match[1].replace(/&amp;/g, '&');
                     return res.json({
                         success: true,
-                        title: `Instagram_${shortcode}`,
-                        thumbnail: formats[0].downloadUrl,
-                        downloadUrl: formats[0].downloadUrl,
-                        formats: formats
+                        title: `Instagram_${Date.now()}`,
+                        thumbnail: finalUrl,
+                        downloadUrl: finalUrl,
+                        formats: [{
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: finalUrl,
+                            extension: 'mp4',
+                            type: 'video'
+                        }]
                     });
                 }
             }
         } catch (_) {}
 
-        // 🌟 GATEWAY 2: Cobalt V10 Stream Aggregator (Bypasses Datacenter Blocks)
-        const cobaltMirrors = [
+        // 🌟 GATEWAY 3: Cobalt V10 Universal Stream
+        const cobaltHosts = [
             'https://cobalt-api.kwiatekm.tokyo',
             'https://api.wuk.sh'
         ];
 
-        for (const mirror of cobaltMirrors) {
+        for (const host of cobaltHosts) {
             try {
-                const cobRes = await axios.post(`${mirror}/`, {
-                    url: `https://www.instagram.com/p/${shortcode}/`,
+                const cRes = await axios.post(`${host}/`, {
+                    url: cleanUrl,
                     videoQuality: 'max'
                 }, {
                     headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
                     timeout: 8000
                 });
 
-                if (cobRes.data && cobRes.data.url) {
+                if (cRes.data && cRes.data.url) {
                     return res.json({
                         success: true,
-                        title: `Instagram_${shortcode}`,
-                        thumbnail: cobRes.data.url,
-                        downloadUrl: cobRes.data.url,
+                        title: `Instagram_${Date.now()}`,
+                        thumbnail: cRes.data.url,
+                        downloadUrl: cRes.data.url,
                         formats: [{
-                            quality: 'HD Quality (MP4)',
-                            downloadUrl: cobRes.data.url,
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: cRes.data.url,
                             extension: 'mp4',
                             type: 'video'
                         }]
                     });
-                } else if (cobRes.data && cobRes.data.picker) {
-                    const formats = cobRes.data.picker.map((p, idx) => ({
+                } else if (cRes.data && cRes.data.picker) {
+                    const formats = cRes.data.picker.map((p, idx) => ({
                         quality: `Item ${idx + 1} (${p.type === 'photo' ? 'Photo' : 'Video'})`,
                         downloadUrl: p.url,
                         extension: p.type === 'photo' ? 'jpg' : 'mp4',
@@ -125,7 +123,7 @@ router.post('/download', async (req, res) => {
 
                     return res.json({
                         success: true,
-                        title: `Instagram_${shortcode}`,
+                        title: `Instagram_${Date.now()}`,
                         thumbnail: formats[0].downloadUrl,
                         downloadUrl: formats[0].downloadUrl,
                         formats: formats
@@ -136,46 +134,12 @@ router.post('/download', async (req, res) => {
             }
         }
 
-        // 🌟 GATEWAY 3: SnapInsta Web Form Gateway
-        try {
-            const snapRes = await axios.post('https://snapinsta.app/action.php',
-                new URLSearchParams({ url: `https://www.instagram.com/reel/${shortcode}/`, action: 'post' }).toString(),
-                {
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-                    },
-                    timeout: 8000
-                }
-            );
-
-            if (snapRes.data) {
-                const vidMatch = snapRes.data.match(/href="([^"]+)" class="btn download-media/);
-                if (vidMatch && vidMatch[1]) {
-                    const dlUrl = vidMatch[1].replace(/&amp;/g, '&');
-                    return res.json({
-                        success: true,
-                        title: `Instagram_${shortcode}`,
-                        thumbnail: dlUrl,
-                        downloadUrl: dlUrl,
-                        formats: [{
-                            quality: 'HD Video (MP4)',
-                            downloadUrl: dlUrl,
-                            extension: 'mp4',
-                            type: 'video'
-                        }]
-                    });
-                }
-            }
-        } catch (_) {}
-
         return res.status(400).json({
             success: false,
             error: 'Instagram link could not be parsed. Verify the reel is public.'
         });
 
     } catch (err) {
-        console.error('Instagram Route Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
