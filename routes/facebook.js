@@ -17,26 +17,21 @@ function decodeSnapSave(p, a, c, k, e, d) {
     return p;
 }
 
-// Expand share links and get real Facebook video destination
-async function unwrapFacebookUrl(rawUrl) {
+// Expand /share/ links to canonical video URL
+async function resolveFacebookUrl(rawUrl) {
     let clean = (rawUrl || '').trim();
 
     if (clean.includes('facebook.com/share/')) {
         try {
-            const res = await axios.get(clean, {
+            const head = await axios.get(clean, {
                 headers: {
-                    'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 maxRedirects: 5,
                 timeout: 3500
             });
-
-            // Canonical link Facebook khud response mein deta hai
-            const $ = cheerio.load(res.data);
-            const canonical = $('link[rel="canonical"]').attr('href') || $('meta[property="og:url"]').attr('content');
-            if (canonical && !canonical.includes('/share/')) {
-                clean = canonical;
+            if (head.request?.res?.responseUrl) {
+                clean = head.request.res.responseUrl;
             }
         } catch (_) {}
     }
@@ -50,14 +45,19 @@ async function unwrapFacebookUrl(rawUrl) {
 
 router.post('/download', async (req, res) => {
     const rawUrl = req.body.url || req.body.link || req.body.videoUrl || req.query.url;
+    const formatType = (req.body.formatType || '').toLowerCase(); // e.g. "video"
+
     if (!rawUrl) return res.status(400).json({ success: false, error: 'Facebook URL is required' });
 
     try {
-        const targetUrl = await unwrapFacebookUrl(rawUrl);
-        console.log('[Facebook] Processing Target URL:', targetUrl);
+        const targetUrl = await resolveFacebookUrl(rawUrl);
+        console.log('[Facebook] Resolving video for URL:', targetUrl);
+
+        let resolvedVideoUrl = null;
+        let thumbnail = null;
 
         // ============================================================
-        // 🌟 GATEWAY 1: Direct SnapSave API with Unpacker (< 2s)
+        // 🌟 GATEWAY 1: SnapSave Dedicated Video Parser (< 2s)
         // ============================================================
         try {
             const snapRes = await axios.post('https://snapsave.app/action.php',
@@ -65,7 +65,7 @@ router.post('/download', async (req, res) => {
                 {
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                         'Referer': 'https://snapsave.app/'
                     },
                     timeout: 4500
@@ -84,39 +84,9 @@ router.post('/download', async (req, res) => {
             if (typeof html === 'string') {
                 const videoMatches = [...html.matchAll(/href="([^"]+)"[^>]*class="button is-success/gi)]
                     .concat([...html.matchAll(/href="([^"]+)"[^>]*>Download<\/a>/gi)]);
-                const photoMatches = [...html.matchAll(/href="([^"]+)"[^>]*class="button is-download/gi)];
 
                 if (videoMatches.length > 0) {
-                    const dlUrl = videoMatches[0][1].replace(/&amp;/g, '&');
-                    return res.json({
-                        success: true,
-                        title: `Facebook_${Date.now()}`,
-                        thumbnail: dlUrl,
-                        downloadUrl: dlUrl,
-                        formats: [{
-                            quality: 'HD Video (MP4)',
-                            downloadUrl: dlUrl,
-                            extension: 'mp4',
-                            type: 'video'
-                        }]
-                    });
-                }
-
-                if (photoMatches.length > 0) {
-                    const formats = photoMatches.map((m, idx) => ({
-                        quality: `HD Photo ${idx + 1} (JPG)`,
-                        downloadUrl: m[1].replace(/&amp;/g, '&'),
-                        extension: 'jpg',
-                        type: 'photo'
-                    }));
-
-                    return res.json({
-                        success: true,
-                        title: `Facebook_${Date.now()}`,
-                        thumbnail: formats[0].downloadUrl,
-                        downloadUrl: formats[0].downloadUrl,
-                        formats: formats
-                    });
+                    resolvedVideoUrl = videoMatches[0][1].replace(/&amp;/g, '&');
                 }
             }
         } catch (snapErr) {
@@ -124,95 +94,87 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 GATEWAY 2: Meta OpenGraph Bot Emulation (< 1.5s)
+        // 🌟 GATEWAY 2: Cobalt Stream Direct Resolver (< 2s)
         // ============================================================
-        try {
-            const fbRes = await axios.get(targetUrl, {
-                headers: {
-                    'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
-                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-                },
-                timeout: 3500
-            });
+        if (!resolvedVideoUrl) {
+            const cobaltNodes = [
+                'https://cobalt-api.kwiatekm.tokyo',
+                'https://api.wuk.sh',
+                'https://co.wuk.sh'
+            ];
 
-            const html = fbRes.data;
-            const $ = cheerio.load(html);
+            for (const node of cobaltNodes) {
+                try {
+                    const cRes = await axios.post(`${node}/`, {
+                        url: targetUrl,
+                        videoQuality: '720'
+                    }, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 3000
+                    });
 
-            const ogVideo = $('meta[property="og:video"]').attr('content') ||
-                            $('meta[property="og:video:secure_url"]').attr('content');
-            const ogImage = $('meta[property="og:image"]').attr('content');
-
-            if (ogVideo) {
-                return res.json({
-                    success: true,
-                    title: `Facebook_${Date.now()}`,
-                    thumbnail: ogImage || ogVideo,
-                    downloadUrl: ogVideo,
-                    formats: [{
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: ogVideo,
-                        extension: 'mp4',
-                        type: 'video'
-                    }]
-                });
+                    if (cRes.data && cRes.data.url) {
+                        resolvedVideoUrl = cRes.data.url;
+                        thumbnail = cRes.data.url;
+                        break;
+                    }
+                } catch (_) {}
             }
-
-            if (ogImage && !ogImage.includes('static.xx.fbcdn.net')) {
-                return res.json({
-                    success: true,
-                    title: `Facebook_${Date.now()}`,
-                    thumbnail: ogImage,
-                    downloadUrl: ogImage,
-                    formats: [{
-                        quality: 'HD Photo (JPG)',
-                        downloadUrl: ogImage,
-                        extension: 'jpg',
-                        type: 'photo'
-                    }]
-                });
-            }
-        } catch (botErr) {
-            console.log('[Facebook] OpenGraph bot emulation failed:', botErr.message);
         }
 
         // ============================================================
-        // 🌟 GATEWAY 3: Cobalt Stream Fallback (< 2s)
+        // 🌟 GATEWAY 3: Direct Meta Relay CDN Search
         // ============================================================
-        try {
-            const cRes = await axios.post('https://cobalt-api.kwiatekm.tokyo/', {
-                url: targetUrl,
-                videoQuality: '720'
-            }, {
-                headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/json'
-                },
-                timeout: 3500
-            });
-
-            if (cRes.data && cRes.data.url) {
-                return res.json({
-                    success: true,
-                    title: `Facebook_${Date.now()}`,
-                    thumbnail: cRes.data.url,
-                    downloadUrl: cRes.data.url,
-                    formats: [{
-                        quality: 'HD Video (MP4)',
-                        downloadUrl: cRes.data.url,
-                        extension: 'mp4',
-                        type: 'video'
-                    }]
+        if (!resolvedVideoUrl) {
+            try {
+                const pageRes = await axios.get(targetUrl, {
+                    headers: {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                    },
+                    timeout: 3500
                 });
-            }
-        } catch (_) {}
+
+                const html = pageRes.data;
+                const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
+                const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
+
+                if (hdMatch && hdMatch[1]) resolvedVideoUrl = JSON.parse(`"${hdMatch[1]}"`);
+                else if (sdMatch && sdMatch[1]) resolvedVideoUrl = JSON.parse(`"${sdMatch[1]}"`);
+
+                const $ = cheerio.load(html);
+                thumbnail = $('meta[property="og:image"]').attr('content') || null;
+            } catch (_) {}
+        }
+
+        // ============================================================
+        // Final Response Validation
+        // ============================================================
+        if (resolvedVideoUrl) {
+            return res.json({
+                success: true,
+                title: `Facebook_${Date.now()}`,
+                thumbnail: thumbnail || resolvedVideoUrl,
+                downloadUrl: resolvedVideoUrl,
+                formats: [{
+                    quality: 'HD Video (MP4)',
+                    downloadUrl: resolvedVideoUrl,
+                    extension: 'mp4',
+                    type: 'video'
+                }]
+            });
+        }
 
         return res.status(400).json({
             success: false,
-            error: 'Unable to extract Facebook media. Please ensure the link is public.'
+            error: 'Facebook video stream could not be extracted. Please ensure the reel or video is public.'
         });
 
     } catch (err) {
-        console.error('[Facebook] Error:', err.message);
+        console.error('[Facebook] General Error:', err.message);
         return res.status(500).json({ success: false, error: err.message });
     }
 });
