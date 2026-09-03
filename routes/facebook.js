@@ -6,7 +6,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
-// Helper: Resolve Short URLs (fb.watch, /share/r/, /share/v/)
+// Helper: Resolve Short URLs (fb.watch, /share/r/, etc.)
 async function resolveFacebookUrl(url) {
     try {
         const response = await axios.get(url, {
@@ -15,7 +15,7 @@ async function resolveFacebookUrl(url) {
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
             maxRedirects: 5,
-            timeout: 5000,
+            timeout: 4000,
             validateStatus: (status) => status >= 200 && status < 400
         });
 
@@ -40,11 +40,13 @@ router.post('/download', async (req, res) => {
             cleanUrl = cleanUrl.split('?')[0];
         }
 
+        console.log(`[Facebook] Processing Target URL: ${cleanUrl}`);
+
         let videoDownloadUrl = null;
         let thumbnail = null;
 
         // ============================================================
-        // 🌟 ENGINE 1: Direct Meta Page Source Parser (Zero Dependency)
+        // 🌟 ENGINE 1: Direct Meta Video Payload Extraction (Fastest)
         // ============================================================
         try {
             const pageRes = await axios.get(cleanUrl, {
@@ -53,14 +55,14 @@ router.post('/download', async (req, res) => {
                     'Accept-Language': 'en-US,en;q=0.9',
                     'Sec-Fetch-Mode': 'navigate'
                 },
-                timeout: 6000
+                timeout: 5000
             });
 
             const html = pageRes.data;
 
-            // Match browser_native_hd_url / browser_native_sd_url
-            const hdMatch = html.match(/browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
-            const sdMatch = html.match(/browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
+            // Direct HD/SD stream matching
+            const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
+            const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
             const thumbMatch = html.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
 
             const chosen = hdMatch ? hdMatch[1] : (sdMatch ? sdMatch[1] : null);
@@ -72,16 +74,16 @@ router.post('/download', async (req, res) => {
                 }
             }
         } catch (err) {
-            console.log('[Facebook] Direct Meta parsing skipped:', err.message);
+            console.log('[Facebook] Direct Meta parsing failed:', err.message);
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Fast Public Fallback Worker API
+        // 🌟 ENGINE 2: Siputzx HD Downloader Engine (Primary Backup)
         // ============================================================
         if (!videoDownloadUrl) {
             try {
                 const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 7000
+                    timeout: 5000
                 });
 
                 if (apiRes.data?.status && apiRes.data?.data) {
@@ -89,48 +91,32 @@ router.post('/download', async (req, res) => {
                     videoDownloadUrl = data.hd || data.sd || data.video || (Array.isArray(data) ? data[0]?.url : null);
                     thumbnail = data.thumbnail || thumbnail;
                 }
-            } catch (_) {}
-        }
-
-        // ============================================================
-        // 🌟 ENGINE 3: Publer Tool Job Fallback
-        // ============================================================
-        if (!videoDownloadUrl) {
-            try {
-                const publerJob = await axios.post('https://publer.io/api/v1/tools/job/downloader', {
-                    url: cleanUrl
-                }, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-                    },
-                    timeout: 5000
-                });
-
-                let media = publerJob.data?.payload;
-                if (!media && publerJob.data?.job_id) {
-                    await new Promise(r => setTimeout(r, 1500));
-                    const pollRes = await axios.get(`https://publer.io/api/v1/tools/job/status/${publerJob.data.job_id}`, {
-                        headers: { 'User-Agent': 'Mozilla/5.0' },
-                        timeout: 4000
-                    });
-                    media = pollRes.data?.payload;
-                }
-
-                if (media && Array.isArray(media)) {
-                    const vid = media.find(m => m.type === 'video' || (m.path && m.path.includes('.mp4')));
-                    if (vid) {
-                        videoDownloadUrl = vid.path;
-                        thumbnail = vid.thumbnail || vid.path;
-                    }
-                }
             } catch (err) {
-                console.log('[Facebook] Publer engine failed:', err.message);
+                console.log('[Facebook] Siputzx engine failed:', err.message);
             }
         }
 
         // ============================================================
-        // RESPONSE DISPATCH
+        // 🌟 ENGINE 3: Fast CDN Media Stream Relay (Final Safe Fallback)
+        // ============================================================
+        if (!videoDownloadUrl) {
+            try {
+                const fbdownRes = await axios.get(`https://widipe.com/download/fb?url=${encodeURIComponent(cleanUrl)}`, {
+                    timeout: 5000
+                });
+
+                if (fbdownRes.data?.result) {
+                    const resData = fbdownRes.data.result;
+                    videoDownloadUrl = resData.hd || resData.sd || resData.video;
+                    thumbnail = resData.thumbnail || thumbnail;
+                }
+            } catch (err) {
+                console.log('[Facebook] Widipe engine failed:', err.message);
+            }
+        }
+
+        // ============================================================
+        // ✅ SUCCESS RESPONSE
         // ============================================================
         if (videoDownloadUrl) {
             return res.json({
@@ -149,7 +135,7 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Unable to extract Facebook video. Make sure the video or reel is public and active.'
+            error: 'Facebook video stream could not be extracted. Make sure the post is public and active.'
         });
 
     } catch (err) {
