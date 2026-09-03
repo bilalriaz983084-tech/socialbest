@@ -6,24 +6,33 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected', timestamp: new Date().toISOString() });
 });
 
-// Helper: Resolve Short URLs (fb.watch, /share/r/, etc.)
-async function resolveFacebookUrl(url) {
+// Helper: Real Unshortener for Facebook Share / Watch Links
+async function resolveFacebookUrl(inputUrl) {
     try {
-        const response = await axios.get(url, {
+        const clean = inputUrl.trim();
+        const res = await axios.get(clean, {
             headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+                'User-Agent': 'facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
             },
-            maxRedirects: 5,
-            timeout: 4000,
+            maxRedirects: 10,
+            timeout: 6000,
             validateStatus: (status) => status >= 200 && status < 400
         });
 
-        if (response.request?.res?.responseUrl) {
-            return response.request.res.responseUrl.split('?')[0];
+        // Check canonical URL or OpenGraph URL in Meta tags
+        const html = typeof res.data === 'string' ? res.data : '';
+        const ogMatch = html.match(/property="og:url"\s+content="([^"]+)"/i) || 
+                        html.match(/content="([^"]+)"\s+property="og:url"/i);
+        if (ogMatch && ogMatch[1] && !ogMatch[1].includes('/share/')) {
+            return ogMatch[1].split('?')[0];
+        }
+
+        if (res.request?.res?.responseUrl && !res.request.res.responseUrl.includes('/share/')) {
+            return res.request.res.responseUrl.split('?')[0];
         }
     } catch (_) {}
-    return url.split('?')[0];
+    return inputUrl.split('?')[0];
 }
 
 router.post('/download', async (req, res) => {
@@ -34,19 +43,21 @@ router.post('/download', async (req, res) => {
 
     try {
         let cleanUrl = rawUrl.trim();
-        if (cleanUrl.includes('fb.watch') || cleanUrl.includes('/share/')) {
+        
+        // 1. Resolve share/short links to canonical video/reel URL
+        if (cleanUrl.includes('/share/') || cleanUrl.includes('fb.watch')) {
             cleanUrl = await resolveFacebookUrl(cleanUrl);
         } else {
             cleanUrl = cleanUrl.split('?')[0];
         }
 
-        console.log(`[Facebook] Processing Target URL: ${cleanUrl}`);
+        console.log(`[Facebook] Target Process URL: ${cleanUrl}`);
 
         let videoDownloadUrl = null;
         let thumbnail = null;
 
         // ============================================================
-        // 🌟 ENGINE 1: Direct Meta Video Payload Extraction (Fastest)
+        // 🌟 ENGINE 1: Direct Meta GraphQL / JSON Payload Scraper
         // ============================================================
         try {
             const pageRes = await axios.get(cleanUrl, {
@@ -59,8 +70,6 @@ router.post('/download', async (req, res) => {
             });
 
             const html = pageRes.data;
-
-            // Direct HD/SD stream matching
             const hdMatch = html.match(/"browser_native_hd_url":"([^"]+)"/) || html.match(/"playable_url_quality_hd":"([^"]+)"/);
             const sdMatch = html.match(/"browser_native_sd_url":"([^"]+)"/) || html.match(/"playable_url":"([^"]+)"/);
             const thumbMatch = html.match(/"preferred_thumbnail":{"image":{"uri":"([^"]+)"/);
@@ -78,12 +87,12 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 ENGINE 2: Siputzx HD Downloader Engine (Primary Backup)
+        // 🌟 ENGINE 2: Fast Multi-Engine API Fallback
         // ============================================================
         if (!videoDownloadUrl) {
             try {
                 const apiRes = await axios.get(`https://api.siputzx.my.id/api/d/facebook?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 5000
+                    timeout: 6000
                 });
 
                 if (apiRes.data?.status && apiRes.data?.data) {
@@ -97,18 +106,18 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // 🌟 ENGINE 3: Fast CDN Media Stream Relay (Final Safe Fallback)
+        // 🌟 ENGINE 3: Widipe FB Resolver
         // ============================================================
         if (!videoDownloadUrl) {
             try {
-                const fbdownRes = await axios.get(`https://widipe.com/download/fb?url=${encodeURIComponent(cleanUrl)}`, {
-                    timeout: 5000
+                const fbRes = await axios.get(`https://widipe.com/download/fb?url=${encodeURIComponent(cleanUrl)}`, {
+                    timeout: 6000
                 });
 
-                if (fbdownRes.data?.result) {
-                    const resData = fbdownRes.data.result;
-                    videoDownloadUrl = resData.hd || resData.sd || resData.video;
-                    thumbnail = resData.thumbnail || thumbnail;
+                if (fbRes.data?.result) {
+                    const d = fbRes.data.result;
+                    videoDownloadUrl = d.hd || d.sd || d.video;
+                    thumbnail = d.thumbnail || thumbnail;
                 }
             } catch (err) {
                 console.log('[Facebook] Widipe engine failed:', err.message);
@@ -116,7 +125,7 @@ router.post('/download', async (req, res) => {
         }
 
         // ============================================================
-        // ✅ SUCCESS RESPONSE
+        // RESPONSE
         // ============================================================
         if (videoDownloadUrl) {
             return res.json({
@@ -135,7 +144,7 @@ router.post('/download', async (req, res) => {
 
         return res.status(400).json({
             success: false,
-            error: 'Facebook video stream could not be extracted. Make sure the post is public and active.'
+            error: 'Facebook video stream could not be extracted. Make sure the video or reel is public.'
         });
 
     } catch (err) {
