@@ -27,8 +27,8 @@ router.post('/download', async (req, res) => {
             const data = response.data.data;
 
             // ============================================================
-            // 1. CHECK FOR PHOTOS FIRST (SLIDESHOW / MULTI-PIC / SINGLE PIC)
-            // Agar post mein images hain, to VIDEO KO REJECT KARO
+            // CASE 1: AGAR POST MEIN PHOTOS / ALBUM HAI
+            // (Yahan se foran return ho jayega, background music video bilkul add nahi hogi)
             // ============================================================
             if (data.images && Array.isArray(data.images) && data.images.length > 0) {
                 const formats = data.images.map((imgUrl, idx) => {
@@ -46,12 +46,12 @@ router.post('/download', async (req, res) => {
                     title: `TikTok_Photo_${Date.now()}`,
                     thumbnail: formats[0].downloadUrl,
                     downloadUrl: formats[0].downloadUrl,
-                    formats: formats
+                    formats: formats // Sirf photos aayengi!
                 });
             }
 
             // ============================================================
-            // 2. AGAR SIRF VIDEO POST HAI (STRICTLY 1 CLEAN VIDEO, NO DUPLICATE)
+            // CASE 2: SIRF AGAR ASAL VIDEO POST HO (Koi photos na hon)
             // ============================================================
             let cleanVideo = data.play || data.hdplay;
             if (cleanVideo) {
@@ -74,7 +74,7 @@ router.post('/download', async (req, res) => {
             }
         }
 
-        return res.status(400).json({ success: false, error: 'Could not extract TikTok media.' });
+        return res.status(400).json({ success: false, error: 'Could not extract media from TikTok.' });
     } catch (err) {
         return res.status(500).json({ success: false, error: err.message });
     }
