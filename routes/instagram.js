@@ -20,7 +20,7 @@ router.post('/download', async (req, res) => {
     let cleanUrl = url.trim().split('?')[0];
 
     // ============================================================
-    // 🌟 METHOD 1: FastDL Gateway (Instant Sub-2s Fallback)
+    // 🌟 METHOD 1: FastDL Multi-Item Extractor
     // ============================================================
     try {
         const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -37,37 +37,39 @@ router.post('/download', async (req, res) => {
 
         if (fdlRes.data && fdlRes.data.url) {
             const rawList = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
-            const formats = rawList.map((entry, idx) => {
-                const dl = entry.url || entry;
-                const isVid = dl.includes('.mp4') || entry.type === 'video';
-                return {
-                    quality: rawList.length > 1 ? `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})` : (isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)'),
-                    downloadUrl: dl,
-                    extension: isVid ? 'mp4' : 'jpg',
-                    type: isVid ? 'video' : 'photo'
-                };
-            });
+            if (rawList.length > 1) { // Agar multi-media post pakar le
+                const formats = rawList.map((entry, idx) => {
+                    const dl = entry.url || entry;
+                    const isVid = dl.includes('.mp4') || entry.type === 'video';
+                    return {
+                        quality: `Photo/Video ${idx + 1}`,
+                        downloadUrl: dl,
+                        extension: isVid ? 'mp4' : 'jpg',
+                        type: isVid ? 'video' : 'photo'
+                    };
+                });
 
-            return res.json({
-                success: true,
-                title: `Instagram_${Date.now()}`,
-                thumbnail: formats[0].downloadUrl,
-                downloadUrl: formats[0].downloadUrl,
-                formats: formats
-            });
+                return res.json({
+                    success: true,
+                    title: `Instagram_${Date.now()}`,
+                    thumbnail: formats[0].downloadUrl,
+                    downloadUrl: formats[0].downloadUrl,
+                    formats: formats
+                });
+            }
         }
     } catch (_) {}
 
     // ============================================================
-    // 🌟 METHOD 2: Apify Verified Actor (ID: nH2AHrwxeTRJoN5hX)
+    // 🌟 METHOD 2: Apify Complete Carousel Extraction (All Photos/Videos)
     // ============================================================
     if (APIFY_TOKEN) {
         try {
             const input = {
                 username: [cleanUrl],
                 resultsLimit: 1,
-                skipPinnedPosts: false,
-                dataDetailLevel: "basicData"
+                skipPinnedPosts: false
+                // dataDetailLevel basic se hata diya hai taake poora multi-item data aye
             };
 
             const run = await apifyClient.actor("nH2AHrwxeTRJoN5hX").call(input, {
@@ -80,11 +82,12 @@ router.post('/download', async (req, res) => {
                 const item = items[0];
                 const formats = [];
 
-                // 1. Carousel Posts
-                if (item.childPosts && item.childPosts.length > 0) {
-                    item.childPosts.forEach((child, idx) => {
+                // 1. Check for childPosts (Carousel format A)
+                const children = item.childPosts || item.sidecarChildren || [];
+                if (children.length > 0) {
+                    children.forEach((child, idx) => {
                         const isVid = child.type === 'Video' || !!child.videoUrl;
-                        const dlUrl = isVid ? child.videoUrl : (child.displayUrl || child.images?.[0]);
+                        const dlUrl = isVid ? child.videoUrl : (child.displayUrl || (child.images && child.images[0]));
 
                         if (dlUrl) {
                             formats.push({
@@ -96,7 +99,18 @@ router.post('/download', async (req, res) => {
                         }
                     });
                 }
-                // 2. Single Video / Reel
+                // 2. Check for images array (Carousel format B - Multiple Images)
+                else if (item.images && Array.isArray(item.images) && item.images.length > 1) {
+                    item.images.forEach((imgUrl, idx) => {
+                        formats.push({
+                            quality: `Photo ${idx + 1}`,
+                            downloadUrl: imgUrl,
+                            extension: 'jpg',
+                            type: 'photo'
+                        });
+                    });
+                }
+                // 3. Single Video / Reel
                 else if (item.videoUrl) {
                     formats.push({
                         quality: 'HD Video (MP4)',
@@ -105,7 +119,7 @@ router.post('/download', async (req, res) => {
                         type: 'video'
                     });
                 }
-                // 3. Single Photo
+                // 4. Single Photo
                 else if (item.displayUrl || (item.images && item.images.length > 0)) {
                     const imgUrl = item.displayUrl || item.images[0];
                     formats.push({
