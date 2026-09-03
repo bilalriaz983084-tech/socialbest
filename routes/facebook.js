@@ -13,7 +13,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Redirects expand karein aur clean URL banayein
+// Helper: Clean tracking queries & expand share links
 async function cleanAndExpandFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
@@ -28,7 +28,7 @@ async function cleanAndExpandFacebookUrl(rawUrl) {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
                 },
                 maxRedirects: 5,
-                timeout: 4000
+                timeout: 3000
             });
             const redirected = headRes.request?.res?.responseUrl;
             if (redirected) {
@@ -48,7 +48,104 @@ router.post('/download', async (req, res) => {
         const targetUrl = await cleanAndExpandFacebookUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: FastDL Direct Conversion (< 2s)
+        // 🌟 METHOD 1: Apify Fast Posts Actor (ID: OkuDbWbIxkgSRhppo)
+        // Direct Priority to stay well within Vercel's 10s budget
+        // ============================================================
+        if (APIFY_TOKEN) {
+            try {
+                const input = {
+                    "direct_urls": [
+                        {
+                            "url": targetUrl
+                        }
+                    ]
+                };
+
+                const run = await apifyClient.actor("OkuDbWbIxkgSRhppo").call(input, {
+                    waitSecs: 7
+                });
+
+                const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
+
+                if (items && items.length > 0) {
+                    const post = items[0];
+                    const formats = [];
+
+                    // Extract Video
+                    let targetVideo = post.video ||
+                                     post.video_url || 
+                                     post.videoUrl || 
+                                     post.playable_url_quality_hd || 
+                                     post.playable_url ||
+                                     post.download_url;
+
+                    if (!targetVideo && post.media && Array.isArray(post.media)) {
+                        for (const m of post.media) {
+                            if (typeof m === 'string' && (m.includes('.mp4') || m.includes('video'))) {
+                                targetVideo = m;
+                                break;
+                            } else if (m && typeof m === 'object' && (m.type === 'video' || m.video_url || m.url)) {
+                                targetVideo = m.video_url || m.url;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (targetVideo && typeof targetVideo === 'string') {
+                        formats.push({
+                            quality: 'HD Video (MP4)',
+                            downloadUrl: targetVideo,
+                            extension: 'mp4',
+                            type: 'video'
+                        });
+                    }
+
+                    // Extract Photo / Carousel Photos
+                    if (formats.length === 0) {
+                        let targetImg = post.image || 
+                                        post.image_url || 
+                                        post.imageUrl || 
+                                        post.thumbnail;
+
+                        if (!targetImg && post.media && Array.isArray(post.media)) {
+                            post.media.forEach((m, idx) => {
+                                const imgLink = typeof m === 'string' ? m : (m.url || m.image_url);
+                                if (imgLink && typeof imgLink === 'string') {
+                                    formats.push({
+                                        quality: `Photo ${idx + 1}`,
+                                        downloadUrl: imgLink,
+                                        extension: 'jpg',
+                                        type: 'photo'
+                                    });
+                                }
+                            });
+                        } else if (targetImg && typeof targetImg === 'string') {
+                            formats.push({
+                                quality: 'HD Photo (JPG)',
+                                downloadUrl: targetImg,
+                                extension: 'jpg',
+                                type: 'photo'
+                            });
+                        }
+                    }
+
+                    if (formats.length > 0) {
+                        return res.json({
+                            success: true,
+                            title: `Facebook_${post.id || post.post_id || Date.now()}`,
+                            thumbnail: formats[0].downloadUrl,
+                            downloadUrl: formats[0].downloadUrl,
+                            formats: formats
+                        });
+                    }
+                }
+            } catch (apifyErr) {
+                console.error('Apify Facebook Fast Error:', apifyErr.message);
+            }
+        }
+
+        // ============================================================
+        // 🌟 METHOD 2: FastDL Gateway (Fallback)
         // ============================================================
         try {
             const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -60,7 +157,7 @@ router.post('/download', async (req, res) => {
                     'Origin': 'https://fastdl.app',
                     'Referer': 'https://fastdl.app/'
                 },
-                timeout: 4000
+                timeout: 3000
             });
 
             if (fdlRes.data && fdlRes.data.url) {
@@ -91,95 +188,6 @@ router.post('/download', async (req, res) => {
                 }
             }
         } catch (_) {}
-
-        // ============================================================
-        // 🌟 METHOD 2: Verified Lightweight Actor (ID: OkuDbWbIxkgSRhppo)
-        // ============================================================
-        if (APIFY_TOKEN) {
-            try {
-                const input = {
-                    "direct_urls": [
-                        {
-                            "url": targetUrl
-                        }
-                    ]
-                };
-
-                const run = await apifyClient.actor("OkuDbWbIxkgSRhppo").call(input, {
-                    waitSecs: 8
-                });
-
-                const { items } = await apifyClient.dataset(run.defaultDatasetId).listItems();
-
-                if (items && items.length > 0) {
-                    const post = items[0];
-                    console.log("Apify Facebook Raw Output:", JSON.stringify(post));
-
-                    const formats = [];
-
-                    // 1. Comprehensive search for video URL
-                    let targetVideo = post.video ||
-                                     post.video_url || 
-                                     post.videoUrl || 
-                                     post.playable_url_quality_hd || 
-                                     post.playable_url ||
-                                     post.download_url;
-
-                    // Agar media array mein video ho
-                    if (!targetVideo && post.media && Array.isArray(post.media)) {
-                        const vItem = post.media.find(m => (typeof m === 'string' && m.includes('.mp4')) || m.type === 'video' || m.video_url);
-                        if (vItem) {
-                            targetVideo = typeof vItem === 'string' ? vItem : (vItem.video_url || vItem.url);
-                        }
-                    }
-
-                    if (targetVideo && typeof targetVideo === 'string') {
-                        formats.push({
-                            quality: 'HD Video (MP4)',
-                            downloadUrl: targetVideo,
-                            extension: 'mp4',
-                            type: 'video'
-                        });
-                    }
-
-                    // 2. Comprehensive search for photo(s)
-                    if (formats.length === 0) {
-                        let targetImg = post.image ||
-                                        post.image_url || 
-                                        post.imageUrl || 
-                                        post.thumbnail;
-
-                        if (!targetImg && post.media && Array.isArray(post.media)) {
-                            const imgItem = post.media.find(m => typeof m === 'string' || m.type === 'image' || m.url);
-                            if (imgItem) {
-                                targetImg = typeof imgItem === 'string' ? imgItem : imgItem.url;
-                            }
-                        }
-
-                        if (targetImg && typeof targetImg === 'string') {
-                            formats.push({
-                                quality: 'HD Photo (JPG)',
-                                downloadUrl: targetImg,
-                                extension: 'jpg',
-                                type: 'photo'
-                            });
-                        }
-                    }
-
-                    if (formats.length > 0) {
-                        return res.json({
-                            success: true,
-                            title: `Facebook_${post.id || post.post_id || Date.now()}`,
-                            thumbnail: formats[0].downloadUrl,
-                            downloadUrl: formats[0].downloadUrl,
-                            formats: formats
-                        });
-                    }
-                }
-            } catch (apifyErr) {
-                console.error('Apify Facebook Fast Error:', apifyErr.message);
-            }
-        }
 
         return res.status(400).json({
             success: false,
