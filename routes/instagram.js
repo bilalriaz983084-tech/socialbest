@@ -20,15 +20,57 @@ router.post('/download', async (req, res) => {
     let cleanUrl = url.trim().split('?')[0];
 
     // ============================================================
-    // 🌟 METHOD 1: Apify Instagram Post Scraper (Exact Input Schema)
+    // 🌟 METHOD 1: FastDL Gateway (Instant Sub-2s Fallback)
+    // ============================================================
+    try {
+        const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
+            url: cleanUrl
+        }, {
+            headers: {
+                'Content-Type': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Origin': 'https://fastdl.app',
+                'Referer': 'https://fastdl.app/'
+            },
+            timeout: 4500
+        });
+
+        if (fdlRes.data && fdlRes.data.url) {
+            const rawList = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
+            const formats = rawList.map((entry, idx) => {
+                const dl = entry.url || entry;
+                const isVid = dl.includes('.mp4') || entry.type === 'video';
+                return {
+                    quality: rawList.length > 1 ? `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})` : (isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)'),
+                    downloadUrl: dl,
+                    extension: isVid ? 'mp4' : 'jpg',
+                    type: isVid ? 'video' : 'photo'
+                };
+            });
+
+            return res.json({
+                success: true,
+                title: `Instagram_${Date.now()}`,
+                thumbnail: formats[0].downloadUrl,
+                downloadUrl: formats[0].downloadUrl,
+                formats: formats
+            });
+        }
+    } catch (_) {}
+
+    // ============================================================
+    // 🌟 METHOD 2: Apify Verified Actor (ID: nH2AHrwxeTRJoN5hX)
     // ============================================================
     if (APIFY_TOKEN) {
         try {
-            // Is actor ko direct post URL 'username' array ke andar chahiye hoti hai
-            const run = await apifyClient.actor("apify/instagram-post-scraper").call({
+            const input = {
                 username: [cleanUrl],
-                resultsLimit: 1
-            }, {
+                resultsLimit: 1,
+                skipPinnedPosts: false,
+                dataDetailLevel: "basicData"
+            };
+
+            const run = await apifyClient.actor("nH2AHrwxeTRJoN5hX").call(input, {
                 waitSecs: 8
             });
 
@@ -38,7 +80,7 @@ router.post('/download', async (req, res) => {
                 const item = items[0];
                 const formats = [];
 
-                // 1. Carousel / Sidecar Posts (Multiple media)
+                // 1. Carousel Posts
                 if (item.childPosts && item.childPosts.length > 0) {
                     item.childPosts.forEach((child, idx) => {
                         const isVid = child.type === 'Video' || !!child.videoUrl;
@@ -88,45 +130,6 @@ router.post('/download', async (req, res) => {
             console.error('Apify execution error:', apifyErr.message);
         }
     }
-
-    // ============================================================
-    // 🌟 METHOD 2: FastDL Instant Fallback
-    // ============================================================
-    try {
-        const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
-            url: cleanUrl
-        }, {
-            headers: {
-                'Content-Type': 'application/json',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Origin': 'https://fastdl.app',
-                'Referer': 'https://fastdl.app/'
-            },
-            timeout: 5000
-        });
-
-        if (fdlRes.data && fdlRes.data.url) {
-            const rawList = Array.isArray(fdlRes.data.url) ? fdlRes.data.url : [fdlRes.data.url];
-            const formats = rawList.map((entry, idx) => {
-                const dl = entry.url || entry;
-                const isVid = dl.includes('.mp4') || entry.type === 'video';
-                return {
-                    quality: rawList.length > 1 ? `Item ${idx + 1} (${isVid ? 'Video' : 'Photo'})` : (isVid ? 'HD Video (MP4)' : 'HD Photo (JPG)'),
-                    downloadUrl: dl,
-                    extension: isVid ? 'mp4' : 'jpg',
-                    type: isVid ? 'video' : 'photo'
-                };
-            });
-
-            return res.json({
-                success: true,
-                title: `Instagram_${Date.now()}`,
-                thumbnail: formats[0].downloadUrl,
-                downloadUrl: formats[0].downloadUrl,
-                formats: formats
-            });
-        }
-    } catch (_) {}
 
     return res.status(400).json({
         success: false,
