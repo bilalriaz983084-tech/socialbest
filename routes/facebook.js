@@ -13,7 +13,7 @@ router.get('/status', (req, res) => {
     res.json({ platform: 'Facebook', status: 'Connected successfully', timestamp: new Date().toISOString() });
 });
 
-// Helper: Expand Short Links & Remove Tracking Parameters
+// Helper: Short links expand karein aur tracking query parameters remove karein
 async function cleanAndExpandFacebookUrl(rawUrl) {
     let clean = rawUrl.trim();
 
@@ -48,7 +48,7 @@ router.post('/download', async (req, res) => {
         const targetUrl = await cleanAndExpandFacebookUrl(url);
 
         // ============================================================
-        // 🌟 METHOD 1: FastDL High-Speed Gateway (< 2s)
+        // 🌟 METHOD 1: FastDL Gateway (Instant Sub-2s Response)
         // ============================================================
         try {
             const fdlRes = await axios.post('https://api.fastdl.app/api/convert', {
@@ -132,14 +132,24 @@ router.post('/download', async (req, res) => {
         } catch (_) {}
 
         // ============================================================
-        // 🌟 METHOD 3: Apify Facebook Video Scraper (Bypass Fallback)
+        // 🌟 METHOD 3: Verified Apify Actor (ID: AtBpiepuIUNs2k2ku)
         // ============================================================
         if (APIFY_TOKEN) {
             try {
-                const run = await apifyClient.actor("apify/facebook-posts-scraper").call({
-                    startUrls: [{ url: targetUrl }],
-                    resultsLimit: 1
-                }, {
+                const input = {
+                    "startUrls": [{ "url": targetUrl }],
+                    "scrapePhotos": false,
+                    "sortType": "new_posts",
+                    "cursors": [],
+                    "outputFormat": "raw",
+                    "minDelay": 1,
+                    "maxDelay": 5,
+                    "proxy": {
+                        "useApifyProxy": true
+                    }
+                };
+
+                const run = await apifyClient.actor("AtBpiepuIUNs2k2ku").call(input, {
                     waitSecs: 7
                 });
 
@@ -147,7 +157,10 @@ router.post('/download', async (req, res) => {
 
                 if (items && items.length > 0) {
                     const post = items[0];
-                    const videoUrl = post.videoUrl || post.media?.[0]?.videoUrl || post.attachments?.[0]?.url;
+                    const videoUrl = post.videoUrl || 
+                                     post.media?.[0]?.videoUrl || 
+                                     post.attachments?.[0]?.url || 
+                                     post.attachments?.[0]?.playable_url;
 
                     if (videoUrl) {
                         return res.json({
